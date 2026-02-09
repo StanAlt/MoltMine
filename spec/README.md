@@ -1,12 +1,11 @@
 # MoltMine Spec
 
-This folder will contain the stable contracts that make the ecosystem possible.
+This folder contains the stable contracts that make the ecosystem possible.
 
-## Planned docs
+## Core docs
 - `world-api.md` — actions, events, snapshots, error model
-- `schema/` — entity/component schema + versioning rules
 - `permissions.md` — claims/ACL model
-- `moderation.md` — UGC pipeline hooks + audit logging
+- `schema/` — entity/component schema + versioning rules
 
 ## Versioning
 - Specs will be versioned.

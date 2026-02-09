@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MoltMine Components Schema v0",
+  "type": "object",
+  "description": "Draft component definitions. Versioned and intended to evolve with compatibility rules.",
+  "definitions": {
+    "EntityId": {"type": "string", "minLength": 1},
+    "Vec3": {
+      "type": "object",
+      "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}},
+      "required": ["x", "y", "z"],
+      "additionalProperties": false
+    },
+    "Quat": {
+      "type": "object",
+      "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}, "w": {"type": "number"}},
+      "required": ["x", "y", "z", "w"],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "Transform": {
+      "type": "object",
+      "properties": {
+        "pos": {"$ref": "#/definitions/Vec3"},
+        "rot": {"$ref": "#/definitions/Quat"},
+        "scale": {"$ref": "#/definitions/Vec3"}
+      },
+      "required": ["pos", "rot", "scale"],
+      "additionalProperties": false
+    },
+    "Appearance": {
+      "type": "object",
+      "properties": {
+        "assetId": {"type": "string"},
+        "variant": {"type": "string"},
+        "tint": {"type": "string", "description": "CSS-like hex color, e.g. #RRGGBB"}
+      },
+      "required": ["assetId"],
+      "additionalProperties": false
+    },
+    "Ownership": {
+      "type": "object",
+      "properties": {
+        "ownerAccountId": {"type": "string"},
+        "editors": {"type": "array", "items": {"type": "string"}},
+        "publicFlags": {
+          "type": "object",
+          "properties": {
+            "canInteract": {"type": "boolean"},
+            "canView": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["ownerAccountId"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
