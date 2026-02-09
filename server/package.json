@@ -1,9 +1,13 @@
 {
   "name": "moltmine-server",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node src/index.js"
+    "dev": "node src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
   }
 }
