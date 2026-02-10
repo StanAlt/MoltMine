@@ -20,7 +20,8 @@ pnpm-debug.log*
 **/dist/
 
 # Server data (world saves)
-server/data/*.json
+server/data/
+data/
 
 # IDE
 .vscode/
