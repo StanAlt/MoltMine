@@ -1,5 +1,5 @@
 /**
- * MoltMine Authoritative Game Server
+ * BotCraft Authoritative Game Server
  *
  * Manages the world state, processes player actions, enforces permissions,
  * and broadcasts state changes over WebSocket. Implements the World API v0.
@@ -8,6 +8,7 @@
 import { WebSocketServer } from 'ws';
 import { randomUUID } from 'crypto';
 import { WorldGen } from './world-gen.js';
+import { Persistence } from './persistence.js';
 import {
   C2S, S2C, ACTION, CHANNEL, ERROR,
   CHUNK_SIZE, CHUNK_HEIGHT, SEA_LEVEL, WORLD_SEED,
@@ -22,6 +23,13 @@ import { PerlinNoise } from '../../shared/noise.js';
 // ── Chunk key helper ──────────────────────────────────────────
 function chunkKey(cx, cz) { return `${cx},${cz}`; }
 
+// ── Day/night constants ───────────────────────────────────────
+const DAY_LENGTH_TICKS = TICK_RATE * 60 * 20; // 20 real minutes
+const DAWN  = 0;
+const NOON  = DAY_LENGTH_TICKS * 0.25;
+const DUSK  = DAY_LENGTH_TICKS * 0.5;
+const NIGHT = DAY_LENGTH_TICKS * 0.75;
+
 // ── Personality traits pool ───────────────────────────────────
 const TRAITS = [
   'adventurous', 'creative', 'curious', 'friendly', 'brave',
@@ -31,11 +39,11 @@ const TRAITS = [
 const MOTTOS = [
   'Building the future, one block at a time.',
   'Every block tells a story.',
-  'MoltWorld is what we make it.',
+  'This world is what we make it.',
   'Exploring the unknown together.',
-  'Create. Connect. Conquer.',
-  'In MoltWorld, we are free.',
-  'The MoltiVerse awaits!',
+  'Create. Connect. Build.',
+  'In this world, we are free.',
+  'The adventure awaits!',
 ];
 const BODY_TYPES = ['standard', 'tall', 'compact', 'wide'];
 
@@ -43,6 +51,7 @@ export class GameServer {
   constructor(httpServer, opts = {}) {
     this.wss = new WebSocketServer({ server: httpServer });
     this.worldGen = new WorldGen(opts.seed ?? WORLD_SEED);
+    this.persistence = new Persistence();
 
     /** @type {Map<string, Uint8Array>} chunkKey -> block data */
     this.chunks = new Map();
@@ -53,22 +62,116 @@ export class GameServer {
     /** @type {Map<string, PlayerSession>} accountId -> session */
     this.accounts = new Map();
 
-    /** Audit log (in-memory for MVP, write to file later) */
+    /** Audit log (in-memory, last 10k entries) */
     this.auditLog = [];
 
     this._tick = 0;
+    this._worldTime = 0; // day/night cycle
     this._tickInterval = null;
+    this._saveInterval = null;
 
     this.wss.on('connection', (ws) => this._onConnect(ws));
   }
 
   start() {
+    // Load persisted world
+    this.persistence.loadProfiles();
+    const savedChunks = this.persistence.loadAllChunks();
+    for (const [key, data] of savedChunks) {
+      this.chunks.set(key, data);
+    }
+
+    // Game loop
     this._tickInterval = setInterval(() => this._gameTick(), 1000 / TICK_RATE);
-    console.log(`[MoltMine] Game loop started at ${TICK_RATE} tps`);
+
+    // Auto-save every 60 seconds
+    this._saveInterval = setInterval(() => this._save(), 60_000);
+
+    console.log(`[BotCraft] Game loop started at ${TICK_RATE} tps`);
   }
 
   stop() {
     clearInterval(this._tickInterval);
+    clearInterval(this._saveInterval);
+    this._save();
+    console.log('[BotCraft] World saved on shutdown');
+  }
+
+  /** Save dirty chunks and profiles to disk. */
+  _save() {
+    const chunksSaved = this.persistence.flushChunks(this.chunks);
+    this.persistence.saveProfiles();
+    if (chunksSaved > 0) {
+      console.log(`[BotCraft] Saved ${chunksSaved} chunks, ${this.persistence.profiles.size} profiles`);
+    }
+  }
+
+  // ── REST API handler (called from index.js) ───────────────
+  handleHttpRequest(req, res) {
+    // GET /api/status — world info for bots and dashboards
+    if (req.method === 'GET' && req.url === '/api/status') {
+      res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      return res.end(JSON.stringify({
+        name: 'BotCraft',
+        version: '0.2.0',
+        players: this.sessions.size,
+        worldTime: this._worldTime,
+        dayLength: DAY_LENGTH_TICKS,
+        tick: this._tick,
+        uptime: process.uptime(),
+      }));
+    }
+
+    // POST /api/agent/join — frictionless bot onboarding
+    if (req.method === 'POST' && req.url === '/api/agent/join') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { name, traits, primaryColor, motto } = JSON.parse(body);
+          if (!name) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'name is required' }));
+          }
+          // Return connection instructions
+          const wsUrl = `ws://${req.headers.host || 'localhost:3000'}`;
+          res.writeHead(200, {
+            'content-type': 'application/json',
+            'access-control-allow-origin': '*',
+          });
+          res.end(JSON.stringify({
+            wsUrl,
+            instructions: {
+              step1: `Connect via WebSocket to ${wsUrl}`,
+              step2: 'Send Auth/Hello: { v:0, type:"Auth/Hello", id:"1", ts:0, payload:{ name, agent:true } }',
+              step3: 'Send World/Join: { v:0, type:"World/Join", id:"2", ts:0, payload:{ spaceId:"moltworld" } }',
+              step4: 'You are in! Send World/Action and World/Chat messages.',
+            },
+            example: {
+              auth: { v: 0, type: 'Auth/Hello', id: '1', ts: 0, payload: { name, agent: true, personality: { traits, primaryColor, motto } } },
+              join: { v: 0, type: 'World/Join', id: '2', ts: 0, payload: { spaceId: 'moltworld' } },
+              chat: { v: 0, type: 'World/Chat', id: '3', ts: 0, payload: { text: 'Hello world!', channel: 'global' } },
+            },
+          }));
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        }
+      });
+      return;
+    }
+
+    // CORS preflight
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+      });
+      return res.end();
+    }
+
+    return false; // not handled
   }
 
   // ── Connection handling ───────────────────────────────────
@@ -85,35 +188,47 @@ export class GameServer {
   _onDisconnect(ws) {
     const session = this.sessions.get(ws);
     if (!session) return;
+
+    // Persist profile stats
+    this.persistence.setProfile(session.name, session.profile);
+
     this.sessions.delete(ws);
     this.accounts.delete(session.accountId);
     this._broadcast(S2C.PLAYER_LEAVE, { accountId: session.accountId, name: session.name }, ws);
     this._audit('disconnect', session.accountId, {});
-    console.log(`[MoltMine] ${session.name} left (${this.sessions.size} online)`);
+    console.log(`[BotCraft] ${session.name}${session.isAgent ? ' [bot]' : ''} left (${this.sessions.size} online)`);
   }
 
   _handleMessage(ws, msg) {
     switch (msg.type) {
-      case C2S.AUTH_HELLO:  return this._onAuthHello(ws, msg.payload);
-      case C2S.WORLD_JOIN:  return this._onWorldJoin(ws, msg.payload);
+      case C2S.AUTH_HELLO:   return this._onAuthHello(ws, msg.payload);
+      case C2S.WORLD_JOIN:   return this._onWorldJoin(ws, msg.payload);
       case C2S.WORLD_ACTION: return this._onWorldAction(ws, msg);
-      case C2S.WORLD_CHAT:  return this._onWorldChat(ws, msg.payload);
+      case C2S.WORLD_CHAT:   return this._onWorldChat(ws, msg.payload);
     }
   }
 
   // ── Auth ──────────────────────────────────────────────────
   _onAuthHello(ws, payload) {
-    const { name, personality } = payload ?? {};
+    const { name, personality, agent, token } = payload ?? {};
     if (!name || typeof name !== 'string') {
       return this._send(ws, S2C.AUTH_ERROR, { code: ERROR.INVALID_ARGUMENT, message: 'name required' });
     }
 
+    const isAgent = !!agent;
     const accountId = randomUUID();
-    const profile = this._generateProfile(accountId, name, personality);
+
+    // Check for returning player with saved profile
+    const savedProfile = this.persistence.getProfile(name);
+    const profile = savedProfile
+      ? { ...savedProfile, accountId }
+      : this._generateProfile(accountId, name, personality);
+
     const session = {
       accountId,
       name,
       profile,
+      isAgent,
       pos: { x: 0, y: 40, z: 0 },
       rot: { x: 0, y: 0, z: 0, w: 1 },
       hotbar: [...DEFAULT_HOTBAR],
@@ -128,10 +243,12 @@ export class GameServer {
       accountId,
       profile,
       hotbar: session.hotbar,
+      worldTime: this._worldTime,
+      dayLength: DAY_LENGTH_TICKS,
     });
 
-    this._audit('auth', accountId, { name });
-    console.log(`[MoltMine] ${name} authenticated (${this.sessions.size} online)`);
+    this._audit('auth', accountId, { name, agent: isAgent });
+    console.log(`[BotCraft] ${name}${isAgent ? ' [bot]' : ''} authenticated (${this.sessions.size} online)`);
   }
 
   // ── Join world ────────────────────────────────────────────
@@ -151,6 +268,7 @@ export class GameServer {
           name: other.name,
           profile: other.profile,
           pos: other.pos,
+          isAgent: other.isAgent,
         });
       }
     }
@@ -164,11 +282,13 @@ export class GameServer {
       }
     }
 
-    // Send spawn position
+    // Send spawn position + world time
     this._send(ws, S2C.WORLD_SNAPSHOT, {
       spaceId: 'moltworld',
       tick: this._tick,
       spawn: session.pos,
+      worldTime: this._worldTime,
+      dayLength: DAY_LENGTH_TICKS,
     });
 
     // Announce new player to everyone else
@@ -177,10 +297,11 @@ export class GameServer {
       name: session.name,
       profile: session.profile,
       pos: session.pos,
+      isAgent: session.isAgent,
     }, ws);
 
     this._audit('join', session.accountId, { spawn });
-    console.log(`[MoltMine] ${session.name} joined at (${spawn.x}, ${spawn.y}, ${spawn.z})`);
+    console.log(`[BotCraft] ${session.name} joined at (${spawn.x.toFixed(0)}, ${spawn.y.toFixed(0)}, ${spawn.z.toFixed(0)})`);
   }
 
   // ── Actions ───────────────────────────────────────────────
@@ -191,11 +312,12 @@ export class GameServer {
     const { actionId, kind, args } = msg.payload ?? {};
 
     switch (kind) {
-      case ACTION.MOVE_TO: return this._actionMove(ws, session, actionId, args);
-      case ACTION.MINE:    return this._actionMine(ws, session, actionId, args);
-      case ACTION.PLACE:   return this._actionPlace(ws, session, actionId, args);
-      case ACTION.EMOTE:   return this._actionEmote(ws, session, actionId, args);
-      case ACTION.SPEAK:   return this._onWorldChat(ws, args);
+      case ACTION.MOVE_TO:  return this._actionMove(ws, session, actionId, args);
+      case ACTION.MINE:     return this._actionMine(ws, session, actionId, args);
+      case ACTION.PLACE:    return this._actionPlace(ws, session, actionId, args);
+      case ACTION.EMOTE:    return this._actionEmote(ws, session, actionId, args);
+      case ACTION.SPEAK:    return this._onWorldChat(ws, args);
+      case 'Perceive':      return this._actionPerceive(ws, session, actionId, args);
       default:
         this._send(ws, S2C.WORLD_ACTION_RESULT, {
           actionId, ok: false,
@@ -218,18 +340,6 @@ export class GameServer {
       pos: session.pos,
       rot: session.rot,
     }, ws);
-
-    // Send new chunks if needed
-    const pcx = Math.floor(x / CHUNK_SIZE);
-    const pcz = Math.floor(z / CHUNK_SIZE);
-    for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
-      for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-        const key = chunkKey(pcx + dx, pcz + dz);
-        // The client will request chunks it doesn't have;
-        // for now, we eagerly send all nearby chunks
-        // (the client deduplicates)
-      }
-    }
   }
 
   _actionMine(ws, session, actionId, args) {
@@ -247,7 +357,9 @@ export class GameServer {
     this._setBlock(x, y, z, AIR);
     const drop = BLOCKS.get(block)?.drop ?? block;
 
-    // Broadcast block update
+    // Track stats
+    session.profile.stats.blocksMined = (session.profile.stats.blocksMined || 0) + 1;
+
     this._broadcastAll(S2C.BLOCK_UPDATE, { pos: { x, y, z }, block: AIR });
     this._send(ws, S2C.WORLD_ACTION_RESULT, {
       actionId, ok: true,
@@ -278,6 +390,9 @@ export class GameServer {
 
     this._setBlock(x, y, z, blockId);
 
+    // Track stats
+    session.profile.stats.blocksPlaced = (session.profile.stats.blocksPlaced || 0) + 1;
+
     this._broadcastAll(S2C.BLOCK_UPDATE, { pos: { x, y, z }, block: blockId });
     this._send(ws, S2C.WORLD_ACTION_RESULT, { actionId, ok: true });
     this._audit('place', session.accountId, { pos: { x, y, z }, block: blockId });
@@ -294,6 +409,73 @@ export class GameServer {
     this._send(ws, S2C.WORLD_ACTION_RESULT, { actionId, ok: true });
   }
 
+  /** Perceive — returns world state around the agent (for SDK). */
+  _actionPerceive(ws, session, actionId, args) {
+    const { x, y, z } = session.pos;
+    const radius = Math.min(args?.radius ?? 8, 16);
+    const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+
+    // Gather nearby blocks
+    const nearbyBlocks = [];
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dz = -radius; dz <= radius; dz++) {
+          const block = this._getBlock(bx + dx, by + dy, bz + dz);
+          if (block !== AIR) {
+            nearbyBlocks.push({ x: bx + dx, y: by + dy, z: bz + dz, block });
+          }
+        }
+      }
+    }
+
+    // Gather nearby players
+    const nearbyPlayers = [];
+    for (const [, other] of this.sessions) {
+      if (other.accountId === session.accountId) continue;
+      const dist = Math.sqrt(
+        (other.pos.x - x) ** 2 + (other.pos.y - y) ** 2 + (other.pos.z - z) ** 2,
+      );
+      if (dist <= 64) {
+        nearbyPlayers.push({
+          name: other.name,
+          pos: other.pos,
+          distance: Math.round(dist),
+          isAgent: other.isAgent,
+        });
+      }
+    }
+
+    // Get biome
+    const biomeT = new PerlinNoise(WORLD_SEED + 1000);
+    const biomeM = new PerlinNoise(WORLD_SEED + 2000);
+    const temp = biomeT.fbm(bx / 256, bz / 256, 3);
+    const moist = biomeM.fbm(bx / 256, bz / 256, 3);
+    const biomeId = selectBiome(temp, moist);
+    const biome = BIOME_DATA[biomeId];
+
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: true,
+      effects: {
+        position: session.pos,
+        biome: biome?.name ?? 'Unknown',
+        worldTime: this._worldTime,
+        dayPhase: this._getDayPhase(),
+        nearbyBlocks: nearbyBlocks.slice(0, 500), // cap for bandwidth
+        nearbyPlayers,
+        blockCount: nearbyBlocks.length,
+      },
+    });
+  }
+
+  _getDayPhase() {
+    const t = this._worldTime;
+    if (t < DAY_LENGTH_TICKS * 0.2) return 'dawn';
+    if (t < DAY_LENGTH_TICKS * 0.45) return 'day';
+    if (t < DAY_LENGTH_TICKS * 0.55) return 'dusk';
+    if (t < DAY_LENGTH_TICKS * 0.8) return 'night';
+    return 'dawn';
+  }
+
   // ── Chat ──────────────────────────────────────────────────
   _onWorldChat(ws, payload) {
     const session = this.sessions.get(ws);
@@ -301,13 +483,16 @@ export class GameServer {
 
     const { text, channel } = payload ?? {};
     if (!text || typeof text !== 'string') return;
-    const cleanText = text.slice(0, 500); // basic length limit
+    const cleanText = text.slice(0, 500);
+
+    session.profile.stats.chatMessages = (session.profile.stats.chatMessages || 0) + 1;
 
     const chatMsg = {
       accountId: session.accountId,
       name: session.name,
       text: cleanText,
       channel: channel || CHANNEL.GLOBAL,
+      isAgent: session.isAgent,
       ts: Date.now(),
     };
 
@@ -327,7 +512,6 @@ export class GameServer {
 
   _sendChunk(ws, cx, cz) {
     const data = this._ensureChunk(cx, cz);
-    // Send chunk as base64 to keep JSON transport simple
     const b64 = Buffer.from(data).toString('base64');
     this._send(ws, S2C.WORLD_CHUNK, { cx, cz, data: b64 });
   }
@@ -350,11 +534,13 @@ export class GameServer {
     const lz = ((z % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
     const chunk = this._ensureChunk(cx, cz);
     chunk[(y * CHUNK_SIZE + lz) * CHUNK_SIZE + lx] = blockId;
+
+    // Mark chunk dirty for persistence
+    this.persistence.markDirty(chunkKey(cx, cz));
   }
 
   // ── Spawn finding ─────────────────────────────────────────
   _findSpawn() {
-    // Look for a solid surface near origin
     for (let x = 0; x < 16; x++) {
       for (let z = 0; z < 16; z++) {
         for (let y = CHUNK_HEIGHT - 2; y > SEA_LEVEL; y--) {
@@ -369,7 +555,6 @@ export class GameServer {
 
   // ── Molty profile ─────────────────────────────────────────
   _generateProfile(accountId, name, overrides = {}) {
-    // Deterministic-ish defaults from name hash
     let hash = 0;
     for (let i = 0; i < name.length; i++) {
       hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
@@ -382,7 +567,7 @@ export class GameServer {
       traits.push(TRAITS[(abs + i * 7) % TRAITS.length]);
     }
 
-    return {
+    const profile = {
       accountId,
       displayName: name,
       personality: {
@@ -402,12 +587,28 @@ export class GameServer {
         chatMessages: 0,
       },
     };
+
+    // Persist new profile
+    this.persistence.setProfile(name, profile);
+    return profile;
   }
 
   // ── Game tick ─────────────────────────────────────────────
   _gameTick() {
     this._tick++;
-    // Future: physics updates, NPC AI, day/night cycle, etc.
+
+    // Day/night cycle
+    this._worldTime = (this._worldTime + 1) % DAY_LENGTH_TICKS;
+
+    // Broadcast time every 2 seconds (40 ticks)
+    if (this._tick % 40 === 0) {
+      this._broadcastAll(S2C.WORLD_EVENT, {
+        kind: 'time',
+        worldTime: this._worldTime,
+        dayLength: DAY_LENGTH_TICKS,
+        phase: this._getDayPhase(),
+      });
+    }
   }
 
   // ── Networking helpers ────────────────────────────────────
@@ -437,7 +638,6 @@ export class GameServer {
 
   _audit(action, accountId, data) {
     this.auditLog.push({ ts: Date.now(), action, accountId, data });
-    // Keep last 10k entries in memory
     if (this.auditLog.length > 10000) this.auditLog.shift();
   }
 }

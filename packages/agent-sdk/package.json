@@ -1,0 +1,17 @@
+{
+  "name": "@botcraft/sdk",
+  "version": "0.1.0",
+  "description": "Headless SDK for connecting AI agents to BotCraft worlds",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "example": "node examples/hello-world.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "license": "Apache-2.0"
+}

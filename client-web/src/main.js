@@ -1,7 +1,8 @@
 /**
- * MoltMine Web Client — Main entry point.
+ * BotCraft Web Client — Main entry point.
  *
  * Boots the Three.js scene, connects to the server, and runs the game loop.
+ * botcraft.app — Where AI agents build worlds.
  */
 
 import * as THREE from 'three';
@@ -9,8 +10,8 @@ import { Connection } from './network/connection.js';
 import { VoxelWorld } from './engine/voxel-world.js';
 import { PlayerController } from './engine/player-controller.js';
 import { RemotePlayers } from './engine/remote-players.js';
-import { createSky } from './engine/sky.js';
-import { S2C, CHUNK_SIZE, CHUNK_HEIGHT } from '@shared/protocol.js';
+import { createSky, updateSky } from './engine/sky.js';
+import { S2C, CHUNK_SIZE, CHUNK_HEIGHT, TICK_RATE } from '@shared/protocol.js';
 import { blockName, DEFAULT_HOTBAR, blockColor, BLOCKS, isEmissive } from '@shared/blocks.js';
 import { selectBiome, BIOME_DATA } from '@shared/biomes.js';
 import { PerlinNoise } from '@shared/noise.js';
@@ -40,6 +41,8 @@ let hotbar = [...DEFAULT_HOTBAR];
 let selectedSlot = 0;
 let chatOpen = false;
 let tabHeld = false;
+let worldTime = 0;
+let dayLength = TICK_RATE * 60 * 20; // 20-minute day cycle (matches server default)
 const onlinePlayers = new Map(); // accountId -> { name, profile }
 const biomeNoise = { t: new PerlinNoise(42 + 1000), m: new PerlinNoise(42 + 2000) };
 
@@ -58,7 +61,7 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-createSky(scene);
+const sky = createSky(scene);
 
 // ── Join flow ───────────────────────────────────────────────
 joinBtn.addEventListener('click', startGame);
@@ -73,16 +76,18 @@ async function startGame() {
 
   try {
     connection = new Connection();
-    const wsUrl = location.protocol === 'https:'
-      ? `wss://${location.host}`
-      : `ws://${location.hostname}:3000`;
+    // Support configurable server URL for production deployments
+    const wsUrl = import.meta.env.VITE_WS_URL
+      || (location.protocol === 'https:'
+        ? `wss://${location.host}`
+        : `ws://${location.hostname}:3000`);
     await connection.connect(wsUrl);
     setupNetworkHandlers();
     connection.authenticate(name);
   } catch (err) {
-    joinBtn.textContent = 'Enter MoltWorld';
+    joinBtn.textContent = 'Enter World';
     joinBtn.disabled = false;
-    alert('Could not connect to MoltMine server. Is it running?');
+    alert('Could not connect to the BotCraft server. Is it running?');
   }
 }
 
@@ -98,7 +103,7 @@ function setupNetworkHandlers() {
 
   connection.on(S2C.AUTH_ERROR, (payload) => {
     alert(`Auth error: ${payload.message}`);
-    joinBtn.textContent = 'Enter MoltWorld';
+    joinBtn.textContent = 'Enter World';
     joinBtn.disabled = false;
   });
 
@@ -120,16 +125,16 @@ function setupNetworkHandlers() {
   });
 
   connection.on(S2C.PLAYER_JOIN, (payload) => {
-    onlinePlayers.set(payload.accountId, { name: payload.name, profile: payload.profile });
+    onlinePlayers.set(payload.accountId, { name: payload.name, profile: payload.profile, isAgent: payload.isAgent });
     remotePlayers?.addPlayer(payload.accountId, payload.name, payload.profile, payload.pos);
-    addChatMessage(null, `${payload.name} entered MoltWorld`, 'system');
+    addChatMessage(null, `${payload.name}${payload.isAgent ? ' (bot)' : ''} joined BotCraft`, 'system');
     updatePlayerList();
   });
 
   connection.on(S2C.PLAYER_LEAVE, (payload) => {
     onlinePlayers.delete(payload.accountId);
     remotePlayers?.removePlayer(payload.accountId);
-    addChatMessage(null, `${payload.name} left MoltWorld`, 'system');
+    addChatMessage(null, `${payload.name} left BotCraft`, 'system');
     updatePlayerList();
   });
 
@@ -143,12 +148,15 @@ function setupNetworkHandlers() {
   });
 
   connection.on(S2C.CHAT_MESSAGE, (payload) => {
-    addChatMessage(payload.name, payload.text);
+    addChatMessage(payload.name, payload.text, payload.isAgent ? 'bot' : 'normal');
   });
 
   connection.on(S2C.WORLD_EVENT, (payload) => {
     if (payload.kind === 'emote') {
       addChatMessage(null, `${payload.name} ${payload.emote}`, 'system');
+    } else if (payload.kind === 'time') {
+      worldTime = payload.worldTime;
+      if (payload.dayLength) dayLength = payload.dayLength;
     }
   });
 
@@ -230,6 +238,9 @@ function gameLoop(now) {
     connection.sendPlace(placeTarget, hotbar[selectedSlot]);
   }
 
+  // Day/night cycle
+  updateSky(sky, scene, worldTime, dayLength);
+
   // Update HUD
   updateHUD();
 
@@ -256,10 +267,23 @@ function updateHUD() {
       : '',
   ].filter(Boolean).join('<br>');
 
+  // Time of day
+  const timeOfDay = dayLength > 0 ? getDayPhaseLabel(worldTime / dayLength) : '';
+
   hudRight.innerHTML = [
     `<span class="hud-label">Players</span> ${onlinePlayers.size + 1}`,
     `<span class="hud-label">Chunks</span> ${voxelWorld.chunks.size}`,
-  ].join('<br>');
+    timeOfDay ? `<span class="hud-label">Time</span> ${timeOfDay}` : '',
+  ].filter(Boolean).join('<br>');
+}
+
+function getDayPhaseLabel(t) {
+  t = ((t % 1) + 1) % 1;
+  if (t < 0.2) return 'Dawn';
+  if (t < 0.45) return 'Day';
+  if (t < 0.55) return 'Dusk';
+  if (t < 0.8) return 'Night';
+  return 'Pre-dawn';
 }
 
 // ── Hotbar ──────────────────────────────────────────────────
@@ -359,6 +383,12 @@ function addChatMessage(name, text, type = 'normal') {
   if (type === 'system') {
     div.textContent = text;
   } else {
+    if (type === 'bot') {
+      const badge = document.createElement('span');
+      badge.className = 'bot-badge';
+      badge.textContent = 'BOT';
+      div.appendChild(badge);
+    }
     const nameSpan = document.createElement('span');
     nameSpan.className = 'name';
     nameSpan.textContent = name + ': ';
@@ -384,11 +414,11 @@ function updatePlayerList() {
   addPlayerEntry(myProfile?.displayName ?? 'You', myProfile?.appearance?.primaryColor ?? '#9B30FF');
   // Add others
   for (const [, p] of onlinePlayers) {
-    addPlayerEntry(p.name, p.profile?.appearance?.primaryColor ?? '#888');
+    addPlayerEntry(p.name, p.profile?.appearance?.primaryColor ?? '#888', p.isAgent);
   }
 }
 
-function addPlayerEntry(name, color) {
+function addPlayerEntry(name, color, isAgent = false) {
   const div = document.createElement('div');
   div.className = 'player-entry';
   const dot = document.createElement('div');
@@ -396,8 +426,15 @@ function addPlayerEntry(name, color) {
   dot.style.backgroundColor = color;
   div.appendChild(dot);
   div.appendChild(document.createTextNode(name));
+  if (isAgent) {
+    const badge = document.createElement('span');
+    badge.className = 'bot-badge';
+    badge.textContent = 'BOT';
+    badge.style.marginLeft = '6px';
+    div.appendChild(badge);
+  }
   playerEntries.appendChild(div);
 }
 
 // Welcome message
-addChatMessage(null, 'Welcome to MoltWorld! Press T to chat.', 'system');
+addChatMessage(null, 'Welcome to BotCraft. Press T to chat.', 'system');
