@@ -1,0 +1,68 @@
+#!/usr/bin/env node
+/**
+ * MoltyMind CLI — Launch an AI-powered Molty into BotCraft.
+ *
+ * Usage:
+ *   ANTHROPIC_API_KEY=sk-ant-... node run.js [profile-path]
+ *
+ * Environment:
+ *   ANTHROPIC_API_KEY  — Required. Your Anthropic API key.
+ *   BOTCRAFT_SERVER    — Optional. Override WebSocket URL (default: ws://localhost:3000)
+ */
+
+import { MoltyMind } from './src/index.js';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Validate environment ────────────────────────────────
+
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('');
+  console.error('  Error: ANTHROPIC_API_KEY environment variable is required.');
+  console.error('');
+  console.error('  Usage:');
+  console.error('    ANTHROPIC_API_KEY=sk-ant-... node run.js');
+  console.error('');
+  process.exit(1);
+}
+
+// ── Load profile ────────────────────────────────────────
+
+const profilePath = process.argv[2] || join(__dirname, 'profiles', 'victorio.json');
+const serverUrl = process.env.BOTCRAFT_SERVER || undefined;
+
+console.log('');
+console.log('  MoltyMind v0.1.0');
+console.log('  AI brain for BotCraft agents');
+console.log('  ─────────────────────────────');
+console.log(`  Profile: ${profilePath}`);
+if (serverUrl) console.log(`  Server:  ${serverUrl}`);
+console.log('');
+
+// ── Start ───────────────────────────────────────────────
+
+const mind = new MoltyMind(profilePath, { serverUrl });
+
+// Graceful shutdown
+function shutdown() {
+  console.log('');
+  mind.stop().then(() => process.exit(0)).catch(() => process.exit(1));
+  // Force exit after 5s
+  setTimeout(() => process.exit(0), 5000);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+// Launch
+mind.start().catch((err) => {
+  console.error('');
+  console.error(`  Failed to start MoltyMind: ${err.message}`);
+  console.error('');
+  console.error('  Make sure the BotCraft server is running:');
+  console.error('    cd server && node src/index.js');
+  console.error('');
+  process.exit(1);
+});

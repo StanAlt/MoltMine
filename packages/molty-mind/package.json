@@ -1,0 +1,16 @@
+{
+  "name": "@botcraft/molty-mind",
+  "version": "0.1.0",
+  "description": "LLM brain for Molty AI agents in BotCraft",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node run.js",
+    "dev": "node run.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@botcraft/sdk": "file:../agent-sdk"
+  },
+  "license": "Apache-2.0"
+}
