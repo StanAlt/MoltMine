@@ -67,28 +67,39 @@ const sky = createSky(scene);
 joinBtn.addEventListener('click', startGame);
 nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
 
+function getWsUrl() {
+  return import.meta.env.VITE_WS_URL
+    || (location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+      ? `ws://${location.hostname}:3000`
+      : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+}
+
 async function startGame() {
   const name = nameInput.value.trim();
   if (!name) { nameInput.focus(); return; }
 
-  joinBtn.textContent = 'Connecting...';
   joinBtn.disabled = true;
+  const maxRetries = 3;
 
-  try {
-    connection = new Connection();
-    // Support configurable server URL for production deployments
-    const wsUrl = import.meta.env.VITE_WS_URL
-      || (location.hostname === 'localhost' || location.hostname === '127.0.0.1'
-        ? `ws://${location.hostname}:3000`
-        : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-    await connection.connect(wsUrl);
-    setupNetworkHandlers();
-    connection.authenticate(name);
-  } catch (err) {
-    joinBtn.textContent = 'Enter World';
-    joinBtn.disabled = false;
-    alert('Could not connect to the BotCraft server. Is it running?');
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    joinBtn.textContent = attempt === 1 ? 'Connecting...' : `Retrying (${attempt}/${maxRetries})...`;
+    try {
+      connection = new Connection();
+      await connection.connect(getWsUrl());
+      setupNetworkHandlers();
+      connection.authenticate(name);
+      return; // success
+    } catch (err) {
+      if (attempt < maxRetries) {
+        joinBtn.textContent = `Retry in ${attempt * 2}s...`;
+        await new Promise(r => setTimeout(r, attempt * 2000));
+      }
+    }
   }
+
+  joinBtn.textContent = 'Enter World';
+  joinBtn.disabled = false;
+  alert('Could not connect to the BotCraft server after multiple attempts. Is it running?');
 }
 
 function setupNetworkHandlers() {
