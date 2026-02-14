@@ -14,8 +14,24 @@
 import { MoltyMind } from './src/index.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { readFileSync, existsSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Load .env file if it exists ─────────────────────────
+// Looks for .env in the molty-mind directory or project root.
+// Format: KEY=VALUE (one per line, no quotes needed)
+for (const envPath of [join(__dirname, '.env'), join(__dirname, '..', '..', '.env')]) {
+  if (existsSync(envPath)) {
+    for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+      const match = line.match(/^\s*([A-Z_]+)\s*=\s*(.+?)\s*$/);
+      if (match && !process.env[match[1]]) {
+        process.env[match[1]] = match[2];
+      }
+    }
+    break;
+  }
+}
 
 // ── Validate environment ────────────────────────────────
 
@@ -36,7 +52,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const profilePath = process.argv[2] || join(__dirname, 'profiles', 'victorio.json');
 const serverUrl = process.env.BOTCRAFT_SERVER || undefined;
-const model = process.env.OPENAI_MODEL || 'gpt-4o';
+const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 console.log('');
 console.log('  MoltyMind v0.1.0');
