@@ -78,9 +78,9 @@ async function startGame() {
     connection = new Connection();
     // Support configurable server URL for production deployments
     const wsUrl = import.meta.env.VITE_WS_URL
-      || (location.protocol === 'https:'
-        ? `wss://${location.host}`
-        : `ws://${location.hostname}:3000`);
+      || (location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+        ? `ws://${location.hostname}:3000`
+        : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
     await connection.connect(wsUrl);
     setupNetworkHandlers();
     connection.authenticate(name);
