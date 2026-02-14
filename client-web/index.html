@@ -281,10 +281,48 @@
     /* ── Click prompt ────────────────────────────── */
     #click-prompt {
       position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      z-index: 15; font-size: 1rem; color: var(--text-dim); display: none;
-      text-align: center; font-weight: 500;
+      z-index: 15; font-size: 1.2rem; color: var(--text); display: none;
+      text-align: center; font-weight: 600; pointer-events: none;
+      background: rgba(0,0,0,0.5); padding: 18px 32px; border-radius: 12px;
+      backdrop-filter: blur(8px); border: 1px solid var(--border);
+      animation: promptPulse 2s ease-in-out infinite;
     }
     #click-prompt.active { display: block; }
+    #click-prompt .click-sub {
+      display: block; margin-top: 6px; font-size: 0.75rem;
+      font-weight: 400; color: var(--text-muted);
+    }
+    @keyframes promptPulse {
+      0%, 100% { opacity: 0.9; transform: translate(-50%, -50%) scale(1); }
+      50% { opacity: 1; transform: translate(-50%, -50%) scale(1.02); }
+    }
+
+    /* ── Minimap ─────────────────────────────────── */
+    #minimap {
+      position: fixed; top: 60px; right: 16px; z-index: 10;
+      display: none; pointer-events: none;
+      background: rgba(0,0,0,0.5); border: 1px solid var(--border);
+      border-radius: 10px; padding: 4px; backdrop-filter: blur(8px);
+    }
+    #minimap canvas {
+      border-radius: 7px; display: block;
+    }
+
+    /* ── Activity Feed ───────────────────────────── */
+    #activity-feed {
+      position: fixed; top: 220px; right: 16px; z-index: 10;
+      display: none; pointer-events: none;
+      width: 240px; max-height: 200px; overflow: hidden;
+    }
+    .activity-item {
+      padding: 4px 10px; margin-bottom: 3px; font-size: 0.7rem;
+      color: var(--text-dim); background: rgba(0,0,0,0.35);
+      border-radius: 6px; border-left: 2px solid var(--border);
+      transition: opacity 0.5s;
+      font-family: var(--mono);
+    }
+    .activity-item.bot { border-left-color: var(--accent); }
+    .activity-item strong { color: var(--text); }
 
     /* ── Responsive ──────────────────────────────── */
     @media (max-width: 500px) {
@@ -352,7 +390,15 @@
     </div>
   </div>
   <div id="player-list"><h3>Players Online</h3><div id="player-entries"></div></div>
-  <div id="click-prompt">Click to enter the world</div>
+  <div id="click-prompt">Click anywhere to play<br><span class="click-sub">WASD move &middot; Mouse look &middot; Space jump</span></div>
+
+  <!-- Minimap -->
+  <div id="minimap">
+    <canvas id="minimap-canvas" width="140" height="140"></canvas>
+  </div>
+
+  <!-- Bot Activity Feed -->
+  <div id="activity-feed"></div>
 
   <script type="module" src="/src/main.js"></script>
 </body>

@@ -10,6 +10,7 @@ import { Connection } from './network/connection.js';
 import { VoxelWorld } from './engine/voxel-world.js';
 import { PlayerController } from './engine/player-controller.js';
 import { RemotePlayers } from './engine/remote-players.js';
+import { ParticleSystem } from './engine/particles.js';
 import { createSky, updateSky } from './engine/sky.js';
 import { S2C, CHUNK_SIZE, CHUNK_HEIGHT, TICK_RATE } from '@shared/protocol.js';
 import { blockName, DEFAULT_HOTBAR, blockColor, BLOCKS, isEmissive } from '@shared/blocks.js';
@@ -32,9 +33,11 @@ const chatInput     = document.getElementById('chat-input');
 const playerList    = document.getElementById('player-list');
 const playerEntries = document.getElementById('player-entries');
 const clickPrompt   = document.getElementById('click-prompt');
+const minimapCanvas = document.getElementById('minimap-canvas');
+const activityFeed  = document.getElementById('activity-feed');
 
 // ── State ───────────────────────────────────────────────────
-let connection, voxelWorld, controller, remotePlayers;
+let connection, voxelWorld, controller, remotePlayers, particles;
 let myAccountId = null;
 let myProfile = null;
 let hotbar = [...DEFAULT_HOTBAR];
@@ -42,14 +45,16 @@ let selectedSlot = 0;
 let chatOpen = false;
 let tabHeld = false;
 let worldTime = 0;
-let dayLength = TICK_RATE * 60 * 20; // 20-minute day cycle (matches server default)
-const onlinePlayers = new Map(); // accountId -> { name, profile }
+let dayLength = TICK_RATE * 60 * 20;
+const onlinePlayers = new Map();
 const biomeNoise = { t: new PerlinNoise(42 + 1000), m: new PerlinNoise(42 + 2000) };
 
 // ── Three.js setup ──────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -88,7 +93,7 @@ async function startGame() {
       await connection.connect(getWsUrl());
       setupNetworkHandlers();
       connection.authenticate(name);
-      return; // success
+      return;
     } catch (err) {
       if (attempt < maxRetries) {
         joinBtn.textContent = `Retry in ${attempt * 2}s...`;
@@ -107,8 +112,6 @@ function setupNetworkHandlers() {
     myAccountId = payload.accountId;
     myProfile = payload.profile;
     if (payload.hotbar) hotbar = payload.hotbar;
-
-    // Join the world
     connection.joinWorld();
   });
 
@@ -119,7 +122,6 @@ function setupNetworkHandlers() {
   });
 
   connection.on(S2C.WORLD_SNAPSHOT, (payload) => {
-    // We have our spawn — enter the game
     if (payload.spawn) {
       controller.position.set(payload.spawn.x, payload.spawn.y, payload.spawn.z);
     }
@@ -128,7 +130,6 @@ function setupNetworkHandlers() {
 
   connection.on(S2C.WORLD_CHUNK, (payload) => {
     const { cx, cz, data } = payload;
-    // Decode base64 chunk data
     const binary = atob(data);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -138,7 +139,8 @@ function setupNetworkHandlers() {
   connection.on(S2C.PLAYER_JOIN, (payload) => {
     onlinePlayers.set(payload.accountId, { name: payload.name, profile: payload.profile, isAgent: payload.isAgent });
     remotePlayers?.addPlayer(payload.accountId, payload.name, payload.profile, payload.pos);
-    addChatMessage(null, `${payload.name}${payload.isAgent ? ' (bot)' : ''} joined BotCraft`, 'system');
+    addChatMessage(null, `${payload.name}${payload.isAgent ? ' [BOT]' : ''} joined BotCraft`, 'system');
+    addActivity(payload.name, 'joined the world', payload.isAgent);
     updatePlayerList();
   });
 
@@ -155,16 +157,29 @@ function setupNetworkHandlers() {
 
   connection.on(S2C.BLOCK_UPDATE, (payload) => {
     const { pos, block } = payload;
+    // Particle effect for block destruction (block == 0 means mined)
+    if (block === 0 && voxelWorld) {
+      const oldBlock = voxelWorld.getBlock(pos.x, pos.y, pos.z);
+      if (oldBlock !== 0) {
+        particles?.emitBlockBreak(pos.x, pos.y, pos.z, blockColor(oldBlock));
+      }
+    } else if (block !== 0) {
+      particles?.emitBlockPlace(pos.x, pos.y, pos.z);
+    }
     voxelWorld?.updateBlock(pos.x, pos.y, pos.z, block);
   });
 
   connection.on(S2C.CHAT_MESSAGE, (payload) => {
     addChatMessage(payload.name, payload.text, payload.isAgent ? 'bot' : 'normal');
+    if (payload.isAgent) {
+      addActivity(payload.name, `said: "${payload.text.slice(0, 60)}"`, true);
+    }
   });
 
   connection.on(S2C.WORLD_EVENT, (payload) => {
     if (payload.kind === 'emote') {
       addChatMessage(null, `${payload.name} ${payload.emote}`, 'system');
+      addActivity(payload.name, payload.emote, true);
     } else if (payload.kind === 'time') {
       worldTime = payload.worldTime;
       if (payload.dayLength) dayLength = payload.dayLength;
@@ -184,22 +199,25 @@ function enterGame() {
   hotbarEl.classList.add('active');
   chatContainer.classList.add('active');
   clickPrompt.classList.add('active');
+  if (minimapCanvas?.parentElement) minimapCanvas.parentElement.style.display = 'block';
+  if (activityFeed) activityFeed.style.display = 'block';
 
   buildHotbar();
 
-  // Wait for click to lock pointer
-  const lock = () => {
-    controller.requestLock();
-    clickPrompt.classList.remove('active');
-    renderer.domElement.removeEventListener('click', lock);
-  };
-  renderer.domElement.addEventListener('click', lock);
-
-  // Also re-lock on click if pointer was released
-  renderer.domElement.addEventListener('click', () => {
-    if (!controller.locked && !chatOpen) {
+  // Pointer lock — listen on document so UI overlays don't block clicks
+  const requestLock = () => {
+    if (!chatOpen) {
       controller.requestLock();
       clickPrompt.classList.remove('active');
+    }
+  };
+
+  document.addEventListener('click', (e) => {
+    // Only lock if clicking the canvas area (not chat input or other inputs)
+    if (e.target === renderer.domElement || e.target === clickPrompt || e.target.tagName === 'CANVAS') {
+      requestLock();
+    } else if (!e.target.closest('#chat-container') && !e.target.closest('#login-screen') && !controller.locked && !chatOpen) {
+      requestLock();
     }
   });
 
@@ -212,10 +230,12 @@ voxelWorld = new VoxelWorld(scene);
 controller = new PlayerController(camera, renderer.domElement, voxelWorld);
 scene.add(controller.highlightMesh);
 remotePlayers = new RemotePlayers(scene, camera);
+particles = new ParticleSystem(scene);
 
 // ── Game loop ───────────────────────────────────────────────
 let lastTime = performance.now();
 let moveAccum = 0;
+let minimapAccum = 0;
 
 function gameLoop(now) {
   requestAnimationFrame(gameLoop);
@@ -226,6 +246,7 @@ function gameLoop(now) {
   // Player movement
   controller.update(dt);
   remotePlayers.update(dt);
+  particles.update(dt);
 
   // Send position to server periodically
   moveAccum += dt;
@@ -252,8 +273,13 @@ function gameLoop(now) {
   // Day/night cycle
   updateSky(sky, scene, worldTime, dayLength);
 
-  // Update HUD
+  // Update HUD + minimap
   updateHUD();
+  minimapAccum += dt;
+  if (minimapAccum > 0.5) {
+    minimapAccum = 0;
+    updateMinimap();
+  }
 
   // Render
   renderer.render(scene, camera);
@@ -264,7 +290,6 @@ function updateHUD() {
   const pos = controller.position;
   const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
 
-  // Get biome at current position
   const temp = biomeNoise.t.fbm(bx / 256, bz / 256, 3);
   const moist = biomeNoise.m.fbm(bx / 256, bz / 256, 3);
   const biomeId = selectBiome(temp, moist);
@@ -278,13 +303,13 @@ function updateHUD() {
       : '',
   ].filter(Boolean).join('<br>');
 
-  // Time of day
   const timeOfDay = dayLength > 0 ? getDayPhaseLabel(worldTime / dayLength) : '';
+  const timeIcon = getDayPhaseIcon(worldTime / dayLength);
 
   hudRight.innerHTML = [
     `<span class="hud-label">Players</span> ${onlinePlayers.size + 1}`,
     `<span class="hud-label">Chunks</span> ${voxelWorld.chunks.size}`,
-    timeOfDay ? `<span class="hud-label">Time</span> ${timeOfDay}` : '',
+    timeOfDay ? `<span class="hud-label">Time</span> ${timeIcon} ${timeOfDay}` : '',
   ].filter(Boolean).join('<br>');
 }
 
@@ -295,6 +320,110 @@ function getDayPhaseLabel(t) {
   if (t < 0.55) return 'Dusk';
   if (t < 0.8) return 'Night';
   return 'Pre-dawn';
+}
+
+function getDayPhaseIcon(t) {
+  t = ((t % 1) + 1) % 1;
+  if (t < 0.2) return '\u2600'; // sun
+  if (t < 0.45) return '\u2600';
+  if (t < 0.55) return '\u263D'; // moon
+  if (t < 0.8) return '\u263D';
+  return '\u2600';
+}
+
+// ── Minimap ─────────────────────────────────────────────────
+function updateMinimap() {
+  if (!minimapCanvas) return;
+  const ctx = minimapCanvas.getContext('2d');
+  const size = minimapCanvas.width;
+  const radius = 32; // blocks shown in each direction
+
+  const px = Math.floor(controller.position.x);
+  const pz = Math.floor(controller.position.z);
+
+  ctx.fillStyle = '#0a0a1e';
+  ctx.fillRect(0, 0, size, size);
+
+  const scale = size / (radius * 2);
+
+  // Draw terrain
+  for (let dx = -radius; dx < radius; dx += 2) {
+    for (let dz = -radius; dz < radius; dz += 2) {
+      const wx = px + dx;
+      const wz = pz + dz;
+
+      // Find top block
+      let topBlock = 0;
+      for (let y = CHUNK_HEIGHT - 1; y >= 0; y--) {
+        const b = voxelWorld.getBlock(wx, y, wz);
+        if (b !== 0) { topBlock = b; break; }
+      }
+
+      if (topBlock === 0) continue;
+
+      const color = blockColor(topBlock);
+      const r = (color >> 16) & 0xff;
+      const g = (color >> 8) & 0xff;
+      const b = color & 0xff;
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+
+      const sx = (dx + radius) * scale;
+      const sy = (dz + radius) * scale;
+      ctx.fillRect(sx, sy, scale * 2 + 1, scale * 2 + 1);
+    }
+  }
+
+  // Draw other players
+  for (const [, p] of remotePlayers.players) {
+    const dx = p.group.position.x - px;
+    const dz = p.group.position.z - pz;
+    if (Math.abs(dx) > radius || Math.abs(dz) > radius) continue;
+
+    ctx.fillStyle = p.isAgent ? '#9B30FF' : '#00E5FF';
+    const sx = (dx + radius) * scale;
+    const sy = (dz + radius) * scale;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Draw self (center)
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Direction indicator
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(size / 2, size / 2);
+  ctx.lineTo(size / 2 + dir.x * 8, size / 2 + dir.z * 8);
+  ctx.stroke();
+}
+
+// ── Activity Feed ───────────────────────────────────────────
+function addActivity(name, action, isBot = false) {
+  if (!activityFeed) return;
+
+  const div = document.createElement('div');
+  div.className = 'activity-item' + (isBot ? ' bot' : '');
+  div.innerHTML = `<strong>${name}</strong> ${action}`;
+
+  activityFeed.appendChild(div);
+  activityFeed.scrollTop = activityFeed.scrollHeight;
+
+  // Fade out after 8s
+  setTimeout(() => {
+    div.style.opacity = '0';
+    setTimeout(() => div.remove(), 500);
+  }, 8000);
+
+  // Keep last 20
+  while (activityFeed.children.length > 20) {
+    activityFeed.removeChild(activityFeed.firstChild);
+  }
 }
 
 // ── Hotbar ──────────────────────────────────────────────────
@@ -325,21 +454,18 @@ function buildHotbar() {
 
 // ── Keyboard shortcuts ──────────────────────────────────────
 document.addEventListener('keydown', (e) => {
-  // Number keys for hotbar
   if (e.code >= 'Digit1' && e.code <= 'Digit9' && !chatOpen) {
     selectedSlot = parseInt(e.code.replace('Digit', '')) - 1;
     if (selectedSlot < hotbar.length) buildHotbar();
     return;
   }
 
-  // T to open chat
   if (e.code === 'KeyT' && !chatOpen && controller.locked) {
     e.preventDefault();
     openChat();
     return;
   }
 
-  // Enter to send chat
   if (e.code === 'Enter' && chatOpen) {
     const text = chatInput.value.trim();
     if (text && connection?.connected) {
@@ -349,13 +475,11 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Escape to close chat
   if (e.code === 'Escape' && chatOpen) {
     closeChat();
     return;
   }
 
-  // Tab for player list
   if (e.code === 'Tab') {
     e.preventDefault();
     if (!tabHeld) {
@@ -403,7 +527,6 @@ function addChatMessage(name, text, type = 'normal') {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'name';
     nameSpan.textContent = name + ': ';
-    // Color the name based on hash
     let hash = 0;
     for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
     const hue = Math.abs(hash) % 360;
@@ -415,15 +538,12 @@ function addChatMessage(name, text, type = 'normal') {
   chatLog.appendChild(div);
   chatLog.scrollTop = chatLog.scrollHeight;
 
-  // Keep last 100 messages
   while (chatLog.children.length > 100) chatLog.removeChild(chatLog.firstChild);
 }
 
 function updatePlayerList() {
   playerEntries.innerHTML = '';
-  // Add self
   addPlayerEntry(myProfile?.displayName ?? 'You', myProfile?.appearance?.primaryColor ?? '#9B30FF');
-  // Add others
   for (const [, p] of onlinePlayers) {
     addPlayerEntry(p.name, p.profile?.appearance?.primaryColor ?? '#888', p.isAgent);
   }
