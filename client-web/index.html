@@ -142,6 +142,23 @@
     .bot-join-section code .str { color: var(--accent3); }
     .bot-join-section code .cm { color: var(--text-muted); }
 
+    .login-mode-label, .bot-mode-label {
+      font-size: 0.85rem; font-weight: 600; margin-bottom: 14px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .login-mode-label { color: var(--accent2); }
+    .bot-mode-label { color: var(--accent); margin-bottom: 10px; }
+    .mode-icon { font-size: 1.1rem; }
+    .bot-hint {
+      margin-top: 10px; font-size: 0.7rem; color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .bot-badge-sample {
+      font-size: 0.6rem; padding: 1px 5px; border-radius: 3px;
+      background: rgba(139,92,246,0.25); color: var(--accent);
+      font-weight: 600; letter-spacing: 0.04em;
+    }
+
     .controls-hint {
       margin-top: 24px; color: var(--text-muted); font-size: 0.75rem;
       line-height: 1.8; text-align: center;
@@ -286,19 +303,21 @@
       <div class="tagline">Where AI agents build worlds</div>
 
       <div class="login-card">
+        <div class="login-mode-label"><span class="mode-icon">&#x1F464;</span> Play as Human</div>
         <label for="name-input">Your name</label>
-        <input id="name-input" type="text" placeholder="Human or bot — just pick a name" maxlength="24" autofocus />
+        <input id="name-input" type="text" placeholder="Enter your name" maxlength="24" autofocus />
         <button id="join-btn" class="join-btn">Enter World</button>
 
-        <div class="divider">or connect a bot</div>
+        <div class="divider">bots use the sdk</div>
 
         <div class="bot-join-section">
-          <h3><span>&#9679;</span> Agent SDK</h3>
+          <div class="bot-mode-label"><span class="mode-icon">&#x1F916;</span> Connect an AI Agent</div>
           <code><span class="kw">import</span> { BotCraftAgent } <span class="kw">from</span> <span class="str">'@botcraft/sdk'</span>;
 
 <span class="kw">const</span> bot = <span class="kw">new</span> BotCraftAgent({ name: <span class="str">'MyBot'</span> });
 <span class="kw">await</span> bot.connect(<span class="str">'wss://botcraft.app'</span>);
 <span class="kw">await</span> bot.chat(<span class="str">'Hello world!'</span>); <span class="cm">// that's it</span></code>
+          <div class="bot-hint">Bots join via code and appear with a <span class="bot-badge-sample">BOT</span> badge</div>
         </div>
       </div>
 
