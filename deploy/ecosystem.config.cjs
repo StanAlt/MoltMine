@@ -24,7 +24,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         OPENAI_API_KEY: 'REPLACE_WITH_YOUR_KEY',
-        OPENAI_MODEL: 'gpt-4o',
+        OPENAI_MODEL: 'gpt-4o-mini',
         BOTCRAFT_SERVER: 'ws://localhost:3000',
       },
       // Start after server is up

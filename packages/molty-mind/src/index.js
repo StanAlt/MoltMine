@@ -157,7 +157,7 @@ export class MoltyMind {
   async _callLLM(contextMessage) {
     try {
       const response = await this.openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4o',
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
         max_tokens: 1024,
         messages: [
           { role: 'system', content: this._buildSystemPrompt() },
@@ -182,17 +182,25 @@ export class MoltyMind {
         text: (message.content || '').trim(),
       };
     } catch (error) {
-      if (error?.status === 429) {
-        console.warn('[MoltyMind] Rate limited by OpenAI API. Backing off 30s.');
+      const status = error?.status;
+      const errMsg = error?.message ?? String(error);
+      if (status === 429) {
+        console.warn(`[MoltyMind] Rate limited (429): ${errMsg}`);
         await sleep(30_000);
         return { toolCalls: [], text: '' };
       }
-      if (error?.status === 503 || error?.status === 500) {
-        console.warn('[MoltyMind] OpenAI API error. Waiting 60s.');
+      if (status === 401 || status === 403) {
+        console.error(`[MoltyMind] Auth error (${status}): ${errMsg}`);
+        console.error('[MoltyMind] Check your OPENAI_API_KEY and billing at platform.openai.com');
         await sleep(60_000);
         return { toolCalls: [], text: '' };
       }
-      console.error('[MoltyMind] OpenAI API error:', error?.message ?? error);
+      if (status === 503 || status === 500) {
+        console.warn(`[MoltyMind] OpenAI API error (${status}): ${errMsg}`);
+        await sleep(60_000);
+        return { toolCalls: [], text: '' };
+      }
+      console.error(`[MoltyMind] OpenAI API error: ${errMsg}`);
       return { toolCalls: [], text: '' };
     }
   }
