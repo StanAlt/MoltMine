@@ -9,7 +9,7 @@
     "dev": "node run.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "openai": "^4.73.0",
     "@botcraft/sdk": "file:../agent-sdk"
   },
   "license": "Apache-2.0"

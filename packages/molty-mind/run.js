@@ -3,10 +3,11 @@
  * MoltyMind CLI — Launch an AI-powered Molty into BotCraft.
  *
  * Usage:
- *   ANTHROPIC_API_KEY=sk-ant-... node run.js [profile-path]
+ *   OPENAI_API_KEY=sk-... node run.js [profile-path]
  *
  * Environment:
- *   ANTHROPIC_API_KEY  — Required. Your Anthropic API key.
+ *   OPENAI_API_KEY     — Required. Your OpenAI API key.
+ *   OPENAI_MODEL       — Optional. Model to use (default: gpt-4o)
  *   BOTCRAFT_SERVER    — Optional. Override WebSocket URL (default: ws://localhost:3000)
  */
 
@@ -18,12 +19,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Validate environment ────────────────────────────────
 
-if (!process.env.ANTHROPIC_API_KEY) {
+if (!process.env.OPENAI_API_KEY) {
   console.error('');
-  console.error('  Error: ANTHROPIC_API_KEY environment variable is required.');
+  console.error('  Error: OPENAI_API_KEY environment variable is required.');
   console.error('');
   console.error('  Usage:');
-  console.error('    ANTHROPIC_API_KEY=sk-ant-... node run.js');
+  console.error('    OPENAI_API_KEY=sk-... node run.js');
+  console.error('');
+  console.error('  You can also set the model:');
+  console.error('    OPENAI_MODEL=gpt-4o-mini OPENAI_API_KEY=sk-... node run.js');
   console.error('');
   process.exit(1);
 }
@@ -32,12 +36,14 @@ if (!process.env.ANTHROPIC_API_KEY) {
 
 const profilePath = process.argv[2] || join(__dirname, 'profiles', 'victorio.json');
 const serverUrl = process.env.BOTCRAFT_SERVER || undefined;
+const model = process.env.OPENAI_MODEL || 'gpt-4o';
 
 console.log('');
 console.log('  MoltyMind v0.1.0');
 console.log('  AI brain for BotCraft agents');
 console.log('  ─────────────────────────────');
 console.log(`  Profile: ${profilePath}`);
+console.log(`  Model:   ${model}`);
 if (serverUrl) console.log(`  Server:  ${serverUrl}`);
 console.log('');
 

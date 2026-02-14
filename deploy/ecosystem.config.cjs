@@ -23,7 +23,8 @@ module.exports = {
       script: 'run.js',
       env: {
         NODE_ENV: 'production',
-        ANTHROPIC_API_KEY: 'REPLACE_WITH_YOUR_KEY',
+        OPENAI_API_KEY: 'REPLACE_WITH_YOUR_KEY',
+        OPENAI_MODEL: 'gpt-4o',
         BOTCRAFT_SERVER: 'ws://localhost:3000',
       },
       // Start after server is up

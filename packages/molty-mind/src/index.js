@@ -1,8 +1,8 @@
 /**
  * MoltyMind — LLM brain for BotCraft agents.
  *
- * Wraps a BotCraftAgent (SDK) + Claude API into a perceive→reason→act loop.
- * Each cycle: perceive world → build context → call Claude with tools →
+ * Wraps a BotCraftAgent (SDK) + OpenAI API into a perceive→reason→act loop.
+ * Each cycle: perceive world → build context → call GPT with function calling →
  * execute returned tool calls → repeat.
  *
  * Usage:
@@ -13,7 +13,7 @@
 import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { BotCraftAgent } from '@botcraft/sdk';
 import { Memory } from './memory.js';
 import { TOOLS, BLOCK_NAME_TO_ID, BLOCK_ID_TO_NAME } from './tools.js';
@@ -43,8 +43,8 @@ export class MoltyMind {
       maxGoals: this.profile.maxGoals || 5,
     });
 
-    // Claude
-    this.anthropic = new Anthropic();
+    // OpenAI
+    this.openai = new OpenAI();
 
     // State
     this.running = false;
@@ -130,16 +130,16 @@ export class MoltyMind {
       // 2. Build context
       const contextMessage = buildContextMessage(perception, this.memory, this.profile, this.agent);
 
-      // 3. Call Claude
-      const { toolCalls, text } = await this._callClaude(contextMessage);
+      // 3. Call OpenAI
+      const { toolCalls, text } = await this._callLLM(contextMessage);
 
       if (text) {
         console.log(`[MoltyMind] Thinking: ${text.slice(0, 120)}${text.length > 120 ? '...' : ''}`);
       }
 
       // 4. Execute tool calls
-      for (const toolUse of toolCalls) {
-        await this._executeTool(toolUse);
+      for (const toolCall of toolCalls) {
+        await this._executeTool(toolCall);
       }
 
       if (toolCalls.length === 0 && !text) {
@@ -152,40 +152,47 @@ export class MoltyMind {
     }
   }
 
-  // ── Claude API ────────────────────────────────────────
+  // ── OpenAI API ────────────────────────────────────────
 
-  async _callClaude(contextMessage) {
+  async _callLLM(contextMessage) {
     try {
-      const response = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+      const response = await this.openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4o',
         max_tokens: 1024,
-        system: this._buildSystemPrompt(),
         messages: [
+          { role: 'system', content: this._buildSystemPrompt() },
           { role: 'user', content: contextMessage },
         ],
         tools: TOOLS,
-        tool_choice: { type: 'auto' },
+        tool_choice: 'auto',
       });
 
-      const toolCalls = response.content.filter(c => c.type === 'tool_use');
-      const textParts = response.content.filter(c => c.type === 'text').map(c => c.text);
+      const message = response.choices[0]?.message;
+      if (!message) return { toolCalls: [], text: '' };
+
+      // Parse tool calls — OpenAI puts them in message.tool_calls
+      // with JSON-stringified arguments
+      const toolCalls = (message.tool_calls || []).map(tc => ({
+        name: tc.function.name,
+        input: JSON.parse(tc.function.arguments),
+      }));
 
       return {
         toolCalls,
-        text: textParts.join(' ').trim(),
+        text: (message.content || '').trim(),
       };
     } catch (error) {
       if (error?.status === 429) {
-        console.warn('[MoltyMind] Rate limited by Claude API. Backing off 30s.');
+        console.warn('[MoltyMind] Rate limited by OpenAI API. Backing off 30s.');
         await sleep(30_000);
         return { toolCalls: [], text: '' };
       }
-      if (error?.status === 529) {
-        console.warn('[MoltyMind] Claude API overloaded. Waiting 60s.');
+      if (error?.status === 503 || error?.status === 500) {
+        console.warn('[MoltyMind] OpenAI API error. Waiting 60s.');
         await sleep(60_000);
         return { toolCalls: [], text: '' };
       }
-      console.error('[MoltyMind] Claude API error:', error?.message ?? error);
+      console.error('[MoltyMind] OpenAI API error:', error?.message ?? error);
       return { toolCalls: [], text: '' };
     }
   }
