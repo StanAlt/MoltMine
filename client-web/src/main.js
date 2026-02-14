@@ -80,7 +80,7 @@ async function startGame() {
     const wsUrl = import.meta.env.VITE_WS_URL
       || (location.hostname === 'localhost' || location.hostname === '127.0.0.1'
         ? `ws://${location.hostname}:3000`
-        : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
+        : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
     await connection.connect(wsUrl);
     setupNetworkHandlers();
     connection.authenticate(name);
