@@ -24,11 +24,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 for (const envPath of [join(__dirname, '.env'), join(__dirname, '..', '..', '.env')]) {
   if (existsSync(envPath)) {
     for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
-      const match = line.match(/^\s*([A-Z_]+)\s*=\s*(.+?)\s*$/);
-      if (match && !process.env[match[1]]) {
+      const match = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.+?)\s*$/);
+      if (match) {
+        // Always override — .env file takes priority over PM2 env
         process.env[match[1]] = match[2];
       }
     }
+    console.log(`  Loaded env from: ${envPath}`);
     break;
   }
 }
