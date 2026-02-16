@@ -158,7 +158,7 @@ export class MoltyMind {
     try {
       const response = await this.openai.chat.completions.create({
         model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-        max_tokens: 1024,
+        max_tokens: 512,
         messages: [
           { role: 'system', content: this._buildSystemPrompt() },
           { role: 'user', content: contextMessage },

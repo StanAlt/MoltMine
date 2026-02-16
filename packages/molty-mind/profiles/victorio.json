@@ -14,7 +14,7 @@
       "newBiome": "Genuinely curious. Takes a moment to observe and comment."
     }
   },
-  "thinkIntervalMs": 6000,
+  "thinkIntervalMs": 20000,
   "perceptionRadius": 10,
   "memoryCapacity": 50,
   "maxGoals": 5,
