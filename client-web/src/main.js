@@ -113,6 +113,8 @@ function setupNetworkHandlers() {
     myAccountId = payload.accountId;
     myProfile = payload.profile;
     if (payload.hotbar) hotbar = payload.hotbar;
+    if (payload.worldTime != null) worldTime = payload.worldTime;
+    if (payload.dayLength) dayLength = payload.dayLength;
     connection.joinWorld();
   });
 
@@ -126,6 +128,8 @@ function setupNetworkHandlers() {
     if (payload.spawn) {
       controller.position.set(payload.spawn.x, payload.spawn.y, payload.spawn.z);
     }
+    if (payload.worldTime != null) worldTime = payload.worldTime;
+    if (payload.dayLength) dayLength = payload.dayLength;
     enterGame();
   });
 
@@ -241,6 +245,11 @@ function gameLoop(now) {
 
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
+
+  // Client-side time interpolation (server broadcasts every 2s, we tick locally)
+  if (dayLength > 0) {
+    worldTime = (worldTime + dt * TICK_RATE) % dayLength;
+  }
 
   // Player movement
   controller.update(dt);
