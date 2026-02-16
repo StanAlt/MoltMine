@@ -33,6 +33,7 @@ const chatInput     = document.getElementById('chat-input');
 const playerList    = document.getElementById('player-list');
 const playerEntries = document.getElementById('player-entries');
 const clickPrompt   = document.getElementById('click-prompt');
+const flyIndicator  = document.getElementById('fly-indicator');
 const minimapCanvas = document.getElementById('minimap-canvas');
 const activityFeed  = document.getElementById('activity-feed');
 
@@ -204,20 +205,18 @@ function enterGame() {
 
   buildHotbar();
 
-  // Pointer lock — listen on document so UI overlays don't block clicks
-  const requestLock = () => {
-    if (!chatOpen) {
+  // Pointer lock — click directly on the canvas (now position:fixed, full viewport)
+  renderer.domElement.addEventListener('click', () => {
+    if (!chatOpen && !controller.locked) {
       controller.requestLock();
       clickPrompt.classList.remove('active');
     }
-  };
+  });
 
-  document.addEventListener('click', (e) => {
-    // Only lock if clicking the canvas area (not chat input or other inputs)
-    if (e.target === renderer.domElement || e.target === clickPrompt || e.target.tagName === 'CANVAS') {
-      requestLock();
-    } else if (!e.target.closest('#chat-container') && !e.target.closest('#login-screen') && !controller.locked && !chatOpen) {
-      requestLock();
+  // Show click prompt when pointer lock is lost
+  document.addEventListener('pointerlockchange', () => {
+    if (!document.pointerLockElement && !chatOpen) {
+      clickPrompt.classList.add('active');
     }
   });
 
@@ -270,6 +269,12 @@ function gameLoop(now) {
     connection.sendPlace(placeTarget, hotbar[selectedSlot]);
   }
 
+  // Water animation — gentle opacity/color pulse
+  if (voxelWorld.waterMaterial) {
+    const wt = now * 0.001;
+    voxelWorld.waterMaterial.opacity = 0.5 + Math.sin(wt * 0.8) * 0.08;
+  }
+
   // Day/night cycle
   updateSky(sky, scene, worldTime, dayLength);
 
@@ -301,6 +306,7 @@ function updateHUD() {
     controller.targetBlock
       ? `<span class="hud-label">Target</span> ${blockName(voxelWorld.getBlock(controller.targetBlock.x, controller.targetBlock.y, controller.targetBlock.z))}`
       : '',
+    controller.flying ? `<span class="hud-label">Mode</span> Flying` : '',
   ].filter(Boolean).join('<br>');
 
   const timeOfDay = dayLength > 0 ? getDayPhaseLabel(worldTime / dayLength) : '';
@@ -457,6 +463,15 @@ document.addEventListener('keydown', (e) => {
   if (e.code >= 'Digit1' && e.code <= 'Digit9' && !chatOpen) {
     selectedSlot = parseInt(e.code.replace('Digit', '')) - 1;
     if (selectedSlot < hotbar.length) buildHotbar();
+    return;
+  }
+
+  if (e.code === 'KeyF' && !chatOpen && controller.locked) {
+    e.preventDefault();
+    const isFlying = controller.toggleFly();
+    if (flyIndicator) {
+      flyIndicator.classList.toggle('active', isFlying);
+    }
     return;
   }
 

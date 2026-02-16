@@ -1,6 +1,6 @@
 /**
  * First-person player controller with pointer-lock, WASD movement,
- * jumping, gravity, and block raycasting for mining/placing.
+ * jumping, gravity, fly mode, and block raycasting for mining/placing.
  */
 
 import * as THREE from 'three';
@@ -8,6 +8,7 @@ import { CHUNK_HEIGHT } from '@shared/protocol.js';
 import { AIR, isSolid, WATER } from '@shared/blocks.js';
 
 const MOVE_SPEED = 6;        // blocks per second
+const FLY_SPEED = 12;        // faster in fly mode
 const JUMP_VELOCITY = 8;
 const GRAVITY = -22;
 const MOUSE_SENSITIVITY = 0.002;
@@ -26,6 +27,7 @@ export class PlayerController {
     this.euler = new THREE.Euler(0, 0, 0, 'YXZ');
     this.onGround = false;
     this.locked = false;
+    this.flying = false;
 
     // Input state
     this.keys = {};
@@ -56,16 +58,18 @@ export class PlayerController {
       this.locked = document.pointerLockElement === this.canvas;
     });
 
-    this.canvas.addEventListener('mousedown', (e) => {
+    // Mouse events on document so they work even when pointer is locked
+    document.addEventListener('mousedown', (e) => {
       if (!this.locked) return;
       if (e.button === 0) this.mouseButtons.left = true;
       if (e.button === 2) this.mouseButtons.right = true;
     });
-    this.canvas.addEventListener('mouseup', (e) => {
+    document.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.mouseButtons.left = false;
       if (e.button === 2) this.mouseButtons.right = false;
     });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.addEventListener('contextmenu', (e) => { if (this.locked) e.preventDefault(); });
 
     document.addEventListener('mousemove', (e) => {
       if (!this.locked) return;
@@ -77,42 +81,82 @@ export class PlayerController {
   }
 
   requestLock() {
-    this.canvas.requestPointerLock();
+    try {
+      const promise = this.canvas.requestPointerLock();
+      if (promise && promise.catch) {
+        promise.catch((err) => {
+          console.warn('Pointer lock failed:', err.message);
+        });
+      }
+    } catch (err) {
+      console.warn('Pointer lock error:', err.message);
+    }
+  }
+
+  toggleFly() {
+    this.flying = !this.flying;
+    if (this.flying) {
+      this.velocity.y = 0;
+    }
+    return this.flying;
   }
 
   update(dt) {
     if (!this.locked) return;
 
-    // Movement direction
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-    forward.y = 0;
-    forward.normalize();
-    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+    // Camera forward and right vectors
+    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const forward = camForward.clone();
+    const right = new THREE.Vector3().crossVectors(camForward, new THREE.Vector3(0, 1, 0)).normalize();
 
-    const moveDir = new THREE.Vector3();
-    if (this.keys['KeyW'] || this.keys['ArrowUp']) moveDir.add(forward);
-    if (this.keys['KeyS'] || this.keys['ArrowDown']) moveDir.sub(forward);
-    if (this.keys['KeyA'] || this.keys['ArrowLeft']) moveDir.sub(right);
-    if (this.keys['KeyD'] || this.keys['ArrowRight']) moveDir.add(right);
-    if (moveDir.lengthSq() > 0) moveDir.normalize();
+    if (this.flying) {
+      // ── Fly mode: move in camera direction, no gravity ──
+      const moveDir = new THREE.Vector3();
+      if (this.keys['KeyW'] || this.keys['ArrowUp']) moveDir.add(forward);
+      if (this.keys['KeyS'] || this.keys['ArrowDown']) moveDir.sub(forward);
+      if (this.keys['KeyA'] || this.keys['ArrowLeft']) moveDir.sub(right);
+      if (this.keys['KeyD'] || this.keys['ArrowRight']) moveDir.add(right);
+      if (this.keys['Space']) moveDir.y += 1;
+      if (this.keys['ShiftLeft'] || this.keys['ShiftRight']) moveDir.y -= 1;
+      if (moveDir.lengthSq() > 0) moveDir.normalize();
 
-    const speed = this.keys['ShiftLeft'] ? MOVE_SPEED * 1.5 : MOVE_SPEED;
-    this.velocity.x = moveDir.x * speed;
-    this.velocity.z = moveDir.z * speed;
+      const speed = (this.keys['ControlLeft'] || this.keys['ControlRight']) ? FLY_SPEED * 2.5 : FLY_SPEED;
+      this.velocity.set(moveDir.x * speed, moveDir.y * speed, moveDir.z * speed);
 
-    // Jump
-    if ((this.keys['Space'] || this.keys['KeyJ']) && this.onGround) {
-      this.velocity.y = JUMP_VELOCITY;
-      this.onGround = false;
+      // Move with collision (optional in fly — skip for now for freedom)
+      this.position.addScaledVector(this.velocity, dt);
+    } else {
+      // ── Walk mode: horizontal WASD, gravity, jumping ──
+      const walkForward = camForward.clone();
+      walkForward.y = 0;
+      walkForward.normalize();
+      const walkRight = new THREE.Vector3().crossVectors(walkForward, new THREE.Vector3(0, 1, 0)).normalize();
+
+      const moveDir = new THREE.Vector3();
+      if (this.keys['KeyW'] || this.keys['ArrowUp']) moveDir.add(walkForward);
+      if (this.keys['KeyS'] || this.keys['ArrowDown']) moveDir.sub(walkForward);
+      if (this.keys['KeyA'] || this.keys['ArrowLeft']) moveDir.sub(walkRight);
+      if (this.keys['KeyD'] || this.keys['ArrowRight']) moveDir.add(walkRight);
+      if (moveDir.lengthSq() > 0) moveDir.normalize();
+
+      const speed = this.keys['ShiftLeft'] ? MOVE_SPEED * 1.5 : MOVE_SPEED;
+      this.velocity.x = moveDir.x * speed;
+      this.velocity.z = moveDir.z * speed;
+
+      // Jump
+      if ((this.keys['Space'] || this.keys['KeyJ']) && this.onGround) {
+        this.velocity.y = JUMP_VELOCITY;
+        this.onGround = false;
+      }
+
+      // Gravity
+      this.velocity.y += GRAVITY * dt;
+
+      // Collision detection and position update
+      this._moveAxis('y', this.velocity.y * dt);
+      this._moveAxis('x', this.velocity.x * dt);
+      this._moveAxis('z', this.velocity.z * dt);
     }
-
-    // Gravity
-    this.velocity.y += GRAVITY * dt;
-
-    // Collision detection and position update
-    this._moveAxis('y', this.velocity.y * dt);
-    this._moveAxis('x', this.velocity.x * dt);
-    this._moveAxis('z', this.velocity.z * dt);
 
     // Don't fall below bedrock
     if (this.position.y < 1) {
