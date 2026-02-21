@@ -11,6 +11,7 @@ import { VoxelWorld } from './engine/voxel-world.js';
 import { PlayerController } from './engine/player-controller.js';
 import { RemotePlayers } from './engine/remote-players.js';
 import { ParticleSystem } from './engine/particles.js';
+import { MobRenderer } from './engine/mobs.js';
 import { createSky, updateSky } from './engine/sky.js';
 import { S2C, CHUNK_SIZE, CHUNK_HEIGHT, TICK_RATE } from '@shared/protocol.js';
 import { blockName, DEFAULT_HOTBAR, blockColor, BLOCKS, isEmissive } from '@shared/blocks.js';
@@ -38,7 +39,7 @@ const minimapCanvas = document.getElementById('minimap-canvas');
 const activityFeed  = document.getElementById('activity-feed');
 
 // ── State ───────────────────────────────────────────────────
-let connection, voxelWorld, controller, remotePlayers, particles;
+let connection, voxelWorld, controller, remotePlayers, particles, mobRenderer;
 let myAccountId = null;
 let myProfile = null;
 let hotbar = [...DEFAULT_HOTBAR];
@@ -191,6 +192,23 @@ function setupNetworkHandlers() {
     }
   });
 
+  // ── Mob events ──
+  connection.on(S2C.MOB_SPAWN, (payload) => {
+    mobRenderer?.addMob(payload.id, payload.type, payload.pos, payload.hp, payload.maxHp);
+  });
+
+  connection.on(S2C.MOB_MOVE, (payload) => {
+    mobRenderer?.updateMobPosition(payload.id, payload.pos);
+  });
+
+  connection.on(S2C.MOB_DESPAWN, (payload) => {
+    mobRenderer?.removeMob(payload.id);
+  });
+
+  connection.on(S2C.MOB_HURT, (payload) => {
+    mobRenderer?.hurtMob(payload.id, payload.hp, payload.maxHp);
+  });
+
   connection.on('disconnected', () => {
     addChatMessage(null, 'Disconnected from server', 'system');
   });
@@ -234,6 +252,7 @@ controller = new PlayerController(camera, renderer.domElement, voxelWorld);
 scene.add(controller.highlightMesh);
 remotePlayers = new RemotePlayers(scene, camera);
 particles = new ParticleSystem(scene);
+mobRenderer = new MobRenderer(scene, camera);
 
 // ── Game loop ───────────────────────────────────────────────
 let lastTime = performance.now();
@@ -255,6 +274,7 @@ function gameLoop(now) {
   controller.update(dt);
   remotePlayers.update(dt);
   particles.update(dt);
+  mobRenderer.update(dt);
 
   // Send position to server periodically
   moveAccum += dt;
@@ -385,6 +405,26 @@ function updateMinimap() {
       const sx = (dx + radius) * scale;
       const sy = (dz + radius) * scale;
       ctx.fillRect(sx, sy, scale * 2 + 1, scale * 2 + 1);
+    }
+  }
+
+  // Draw mobs on minimap
+  if (mobRenderer) {
+    for (const [, mob] of mobRenderer.mobs) {
+      const dx = mob.group.position.x - px;
+      const dz = mob.group.position.z - pz;
+      if (Math.abs(dx) > radius || Math.abs(dz) > radius) continue;
+
+      const mobColor = mob.def.color;
+      const mr = (mobColor >> 16) & 0xff;
+      const mg = (mobColor >> 8) & 0xff;
+      const mb = mobColor & 0xff;
+      ctx.fillStyle = `rgb(${mr},${mg},${mb})`;
+      const sx = (dx + radius) * scale;
+      const sy = (dz + radius) * scale;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 2, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 

@@ -24,6 +24,10 @@ export const S2C = {
   PLAYER_MOVE:     'Player/Move',
   BLOCK_UPDATE:    'Block/Update',
   CHAT_MESSAGE:    'Chat/Message',
+  MOB_SPAWN:       'Mob/Spawn',
+  MOB_MOVE:        'Mob/Move',
+  MOB_DESPAWN:     'Mob/Despawn',
+  MOB_HURT:        'Mob/Hurt',
 };
 
 // ── Action kinds (World/Action.kind) ──────────────────────────

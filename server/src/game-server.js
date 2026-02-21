@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import { randomUUID } from 'crypto';
 import { WorldGen } from './world-gen.js';
 import { Persistence } from './persistence.js';
+import { MobManager } from './mob-manager.js';
 import {
   C2S, S2C, ACTION, CHANNEL, ERROR,
   CHUNK_SIZE, CHUNK_HEIGHT, SEA_LEVEL, WORLD_SEED,
@@ -69,6 +70,9 @@ export class GameServer {
     this._worldTime = 0; // day/night cycle
     this._tickInterval = null;
     this._saveInterval = null;
+
+    // Mob system
+    this.mobs = new MobManager(this);
 
     this.wss.on('connection', (ws) => this._onConnect(ws));
   }
@@ -234,6 +238,9 @@ export class GameServer {
       hotbar: [...DEFAULT_HOTBAR],
       selectedSlot: 0,
       ws,
+      _sentChunks: new Set(),
+      _lastCX: null,
+      _lastCZ: null,
     };
 
     this.sessions.set(ws, session);
@@ -273,12 +280,17 @@ export class GameServer {
       }
     }
 
-    // Send chunks around spawn
+    // Send chunks around spawn and track them for streaming
     const pcx = Math.floor(spawn.x / CHUNK_SIZE);
     const pcz = Math.floor(spawn.z / CHUNK_SIZE);
+    session._lastCX = pcx;
+    session._lastCZ = pcz;
     for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
       for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-        this._sendChunk(ws, pcx + dx, pcz + dz);
+        const cx = pcx + dx;
+        const cz = pcz + dz;
+        session._sentChunks.add(chunkKey(cx, cz));
+        this._sendChunk(ws, cx, cz);
       }
     }
 
@@ -299,6 +311,17 @@ export class GameServer {
       pos: session.pos,
       isAgent: session.isAgent,
     }, ws);
+
+    // Send existing mobs to the new player
+    for (const mob of this.mobs.mobs.values()) {
+      this._send(ws, S2C.MOB_SPAWN, {
+        id: mob.id,
+        type: mob.type,
+        pos: mob.pos,
+        hp: mob.hp,
+        maxHp: mob.maxHp,
+      });
+    }
 
     this._audit('join', session.accountId, { spawn });
     console.log(`[BotCraft] ${session.name} joined at (${spawn.x.toFixed(0)}, ${spawn.y.toFixed(0)}, ${spawn.z.toFixed(0)})`);
@@ -333,6 +356,25 @@ export class GameServer {
 
     session.pos = { x, y, z };
     if (args.rot) session.rot = args.rot;
+
+    // Streaming chunk loading — send new chunks as player moves
+    const newCX = Math.floor(x / CHUNK_SIZE);
+    const newCZ = Math.floor(z / CHUNK_SIZE);
+    if (session._lastCX !== newCX || session._lastCZ !== newCZ) {
+      session._lastCX = newCX;
+      session._lastCZ = newCZ;
+      for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
+        for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
+          const cx = newCX + dx;
+          const cz = newCZ + dz;
+          const key = chunkKey(cx, cz);
+          if (!session._sentChunks.has(key)) {
+            session._sentChunks.add(key);
+            this._sendChunk(ws, cx, cz);
+          }
+        }
+      }
+    }
 
     // Broadcast to others
     this._broadcast(S2C.PLAYER_MOVE, {
@@ -541,16 +583,20 @@ export class GameServer {
 
   // ── Spawn finding ─────────────────────────────────────────
   _findSpawn() {
+    // Find a solid block with 2 air blocks above it (player is 1.7 blocks tall)
     for (let x = 0; x < 16; x++) {
       for (let z = 0; z < 16; z++) {
-        for (let y = CHUNK_HEIGHT - 2; y > SEA_LEVEL; y--) {
-          if (isSolid(this._getBlock(x, y, z)) && !isSolid(this._getBlock(x, y + 1, z))) {
-            return { x: x + 0.5, y: y + 1.5, z: z + 0.5 };
+        for (let y = CHUNK_HEIGHT - 3; y > SEA_LEVEL; y--) {
+          if (isSolid(this._getBlock(x, y, z)) &&
+              !isSolid(this._getBlock(x, y + 1, z)) &&
+              !isSolid(this._getBlock(x, y + 2, z))) {
+            // Position feet at y+1 (on top of solid block), eyes at y+1+1.7
+            return { x: x + 0.5, y: y + 1 + 1.7, z: z + 0.5 };
           }
         }
       }
     }
-    return { x: 8, y: 40, z: 8 };
+    return { x: 8, y: 45, z: 8 };
   }
 
   // ── Molty profile ─────────────────────────────────────────
@@ -599,6 +645,11 @@ export class GameServer {
 
     // Day/night cycle
     this._worldTime = (this._worldTime + 1) % DAY_LENGTH_TICKS;
+
+    // Update mobs every 4 ticks (5 times/sec)
+    if (this._tick % 4 === 0) {
+      this.mobs.update(this._tick, this._getDayPhase());
+    }
 
     // Broadcast time every 2 seconds (40 ticks)
     if (this._tick % 40 === 0) {

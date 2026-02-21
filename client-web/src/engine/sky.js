@@ -29,7 +29,7 @@ export function createSky(scene) {
   const ambient = new THREE.AmbientLight(0x404060, 0.4);
   scene.add(ambient);
 
-  scene.fog = new THREE.FogExp2(0x8899bb, 0.0065);
+  scene.fog = new THREE.FogExp2(0x8899bb, 0.006);
   scene.background = new THREE.Color(0x7799cc);
 
   // Stars
