@@ -49,6 +49,9 @@ export class BotCraftAgent {
     this.position = { x: 0, y: 0, z: 0 };
     this.worldTime = 0;
     this.dayLength = 24000;
+    this.hp = 20;
+    this.maxHp = 20;
+    this.dead = false;
 
     this._handlers = new Map();
     this._pendingActions = new Map(); // actionId -> { resolve, reject }
@@ -157,6 +160,15 @@ export class BotCraftAgent {
    */
   emote(emoteName) {
     return this._action('Emote', { name: emoteName });
+  }
+
+  /**
+   * Attack a mob by its ID.
+   * @param {string} mobId — The mob's unique identifier
+   * @returns {Promise<{ok: boolean, effects?: object, error?: object}>}
+   */
+  attackMob(mobId) {
+    return this._action('AttackMob', { mobId });
   }
 
   /**
@@ -279,6 +291,41 @@ export class BotCraftAgent {
       case 'World/Chunk':
         // Headless agents don't render, but emit for advanced use
         this._emit('chunk', msg.payload);
+        break;
+
+      case 'Mob/Spawn':
+        this._emit('mobSpawn', msg.payload);
+        break;
+      case 'Mob/Move':
+        this._emit('mobMove', msg.payload);
+        break;
+      case 'Mob/Despawn':
+        this._emit('mobDespawn', msg.payload);
+        break;
+      case 'Mob/Hurt':
+        this._emit('mobHurt', msg.payload);
+        break;
+      case 'Player/Hurt':
+        if (msg.payload.accountId === this.accountId) {
+          this.hp = msg.payload.hp;
+          this.maxHp = msg.payload.maxHp;
+        }
+        this._emit('playerHurt', msg.payload);
+        break;
+      case 'Player/Death':
+        if (msg.payload.accountId === this.accountId) {
+          this.dead = true;
+        }
+        this._emit('playerDeath', msg.payload);
+        break;
+      case 'Player/Respawn':
+        if (msg.payload.accountId === this.accountId) {
+          this.dead = false;
+          this.hp = msg.payload.hp;
+          this.maxHp = msg.payload.maxHp;
+          this.position = msg.payload.pos;
+        }
+        this._emit('playerRespawn', msg.payload);
         break;
     }
   }

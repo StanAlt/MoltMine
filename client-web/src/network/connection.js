@@ -93,4 +93,12 @@ export class Connection {
       args: { name },
     });
   }
+
+  sendAttackMob(mobId) {
+    this.send(C2S.WORLD_ACTION, {
+      actionId: String(Date.now()),
+      kind: ACTION.ATTACK_MOB,
+      args: { mobId },
+    });
+  }
 }

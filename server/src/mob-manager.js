@@ -83,6 +83,16 @@ const MOB_TYPES = {
   },
 };
 
+// Drops when a mob is killed (block names from shared/blocks.js)
+const MOB_DROPS = {
+  woolly:       ['wool', 'wool'],
+  glowbug:      ['glowstone'],
+  frostling:    ['snow', 'ice'],
+  shroomy:      ['red_mushroom', 'brown_mushroom'],
+  lava_slime:   ['magma', 'coal_ore'],
+  shadow_creep: ['obsidian', 'diamond_ore'],
+};
+
 const MAX_MOBS = 40;
 const SPAWN_RADIUS = 48;       // blocks from a player
 const DESPAWN_RADIUS = 80;     // beyond this, remove
@@ -266,7 +276,10 @@ export class MobManager {
       const dz = nearest.pos.z - mob.pos.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
 
-      if (dist > 1.5) {
+      if (dist <= 1.8) {
+        // Close enough to attack
+        this.server.damagePlayer(nearest, def.damage || 3, def.name);
+      } else {
         const moveSpeed = def.speed * 0.2;
         const mx = (dx / dist) * moveSpeed;
         const mz = (dz / dist) * moveSpeed;
@@ -303,8 +316,22 @@ export class MobManager {
     });
 
     if (mob.hp <= 0) {
+      const def = MOB_TYPES[mob.type];
+      const drops = MOB_DROPS[mob.type] || [];
       this.mobs.delete(mob.id);
       this.server._broadcastAll(S2C.MOB_DESPAWN, { id: mob.id });
+
+      // Announce the kill
+      if (attackerSession) {
+        const dropText = drops.length > 0 ? ` and got ${drops.join(', ')}` : '';
+        this.server._broadcastAll(S2C.CHAT_MESSAGE, {
+          name: null,
+          text: `${attackerSession.name} defeated a ${def?.name || mob.type}${dropText}!`,
+          channel: 'global',
+          isAgent: false,
+          ts: Date.now(),
+        });
+      }
     }
   }
 

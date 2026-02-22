@@ -46,6 +46,11 @@ let hotbar = [...DEFAULT_HOTBAR];
 let selectedSlot = 0;
 let chatOpen = false;
 let tabHeld = false;
+let playerHp = 20;
+let playerMaxHp = 20;
+let playerDead = false;
+let attackCooldown = 0;
+let hurtOverlay = 0;  // red flash timer
 let worldTime = 0;
 let dayLength = TICK_RATE * 60 * 20;
 const onlinePlayers = new Map();
@@ -209,6 +214,36 @@ function setupNetworkHandlers() {
     mobRenderer?.hurtMob(payload.id, payload.hp, payload.maxHp);
   });
 
+  // ── Player health events ──
+  connection.on(S2C.PLAYER_HURT, (payload) => {
+    if (payload.accountId === myAccountId) {
+      playerHp = payload.hp;
+      playerMaxHp = payload.maxHp;
+      hurtOverlay = 0.4;
+    }
+  });
+
+  connection.on(S2C.PLAYER_DEATH, (payload) => {
+    if (payload.accountId === myAccountId) {
+      playerDead = true;
+      playerHp = 0;
+      addChatMessage(null, `You were killed by ${payload.source}!`, 'system');
+    } else {
+      const name = onlinePlayers.get(payload.accountId)?.name ?? 'Someone';
+      addChatMessage(null, `${name} was killed by ${payload.source}`, 'system');
+    }
+  });
+
+  connection.on(S2C.PLAYER_RESPAWN, (payload) => {
+    if (payload.accountId === myAccountId) {
+      playerDead = false;
+      playerHp = payload.hp;
+      playerMaxHp = payload.maxHp;
+      controller.position.set(payload.pos.x, payload.pos.y, payload.pos.z);
+      addChatMessage(null, 'You respawned!', 'system');
+    }
+  });
+
   connection.on('disconnected', () => {
     addChatMessage(null, 'Disconnected from server', 'system');
   });
@@ -286,15 +321,25 @@ function gameLoop(now) {
     );
   }
 
-  // Mining
+  // Attack cooldown
+  if (attackCooldown > 0) attackCooldown -= dt;
+
+  // Mining or mob attack
   const mineTarget = controller.getMineTarget();
-  if (mineTarget && connection?.connected) {
-    connection.sendMine(mineTarget);
+  if (mineTarget && connection?.connected && !playerDead) {
+    // Check if we're looking at a mob instead of a block
+    const hitMob = findMobInCrosshair();
+    if (hitMob && attackCooldown <= 0) {
+      connection.sendAttackMob(hitMob);
+      attackCooldown = 0.4; // attack cooldown
+    } else if (!hitMob) {
+      connection.sendMine(mineTarget);
+    }
   }
 
   // Placing
   const placeTarget = controller.getPlaceTarget();
-  if (placeTarget && connection?.connected) {
+  if (placeTarget && connection?.connected && !playerDead) {
     connection.sendPlace(placeTarget, hotbar[selectedSlot]);
   }
 
@@ -302,6 +347,11 @@ function gameLoop(now) {
   if (voxelWorld.waterMaterial) {
     const wt = now * 0.001;
     voxelWorld.waterMaterial.opacity = 0.5 + Math.sin(wt * 0.8) * 0.08;
+  }
+
+  // Hurt flash overlay
+  if (hurtOverlay > 0) {
+    hurtOverlay -= dt;
   }
 
   // Day/night cycle
@@ -329,13 +379,20 @@ function updateHUD() {
   const biomeId = selectBiome(temp, moist);
   const biome = BIOME_DATA[biomeId];
 
+  // Health bar
+  const hpRatio = playerMaxHp > 0 ? playerHp / playerMaxHp : 0;
+  const hpColor = hpRatio > 0.5 ? '#4f4' : hpRatio > 0.25 ? '#fa0' : '#f33';
+  const hpBar = `<span class="hud-label">HP</span> <span style="display:inline-block;width:60px;height:8px;background:rgba(0,0,0,0.4);border-radius:3px;vertical-align:middle"><span style="display:block;width:${hpRatio * 100}%;height:100%;background:${hpColor};border-radius:3px"></span></span> ${playerHp}/${playerMaxHp}`;
+
   hudLeft.innerHTML = [
+    hpBar,
     `<span class="hud-label">XYZ</span> ${bx} / ${by} / ${bz}`,
     `<span class="hud-label">Biome</span> ${biome?.name ?? 'Unknown'}`,
     controller.targetBlock
       ? `<span class="hud-label">Target</span> ${blockName(voxelWorld.getBlock(controller.targetBlock.x, controller.targetBlock.y, controller.targetBlock.z))}`
       : '',
     controller.flying ? `<span class="hud-label">Mode</span> Flying` : '',
+    playerDead ? '<span style="color:#f44;font-weight:bold">DEAD — Respawning...</span>' : '',
   ].filter(Boolean).join('<br>');
 
   const timeOfDay = dayLength > 0 ? getDayPhaseLabel(worldTime / dayLength) : '';
@@ -630,6 +687,68 @@ function addPlayerEntry(name, color, isAgent = false) {
   }
   playerEntries.appendChild(div);
 }
+
+// ── Mob targeting (crosshair raycast against mob hitboxes) ───
+function findMobInCrosshair() {
+  if (!mobRenderer || !controller.locked) return null;
+
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  const origin = camera.position;
+  const maxDist = 6;
+
+  let closestId = null;
+  let closestDist = maxDist;
+
+  for (const [id, mob] of mobRenderer.mobs) {
+    const mobPos = mob.group.position;
+    const def = mob.def;
+    const hw = (def.bodyW || 0.8) / 2 + 0.2;
+    const hh = (def.hasLegs ? def.legH + def.bodyH : def.bodyH) + 0.2;
+
+    // Simple ray-AABB test
+    const toMob = new THREE.Vector3().subVectors(mobPos, origin);
+    const t = toMob.dot(dir);
+    if (t < 0 || t > maxDist) continue;
+
+    const closest = new THREE.Vector3().copy(origin).addScaledVector(dir, t);
+    const dx = Math.abs(closest.x - mobPos.x);
+    const dy = closest.y - mobPos.y;
+    const dz = Math.abs(closest.z - mobPos.z);
+
+    if (dx < hw && dz < hw && dy > -0.2 && dy < hh) {
+      if (t < closestDist) {
+        closestDist = t;
+        closestId = id;
+      }
+    }
+  }
+  return closestId;
+}
+
+// ── Hurt overlay ─────────────────────────────────────────────
+const hurtOverlayEl = document.createElement('div');
+hurtOverlayEl.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;transition:opacity 0.15s';
+document.body.appendChild(hurtOverlayEl);
+
+// Update hurt overlay each frame (driven from game loop via hurtOverlay variable)
+const _origGameLoop = gameLoop;
+// Patch: render hurt overlay after main render
+const _hurtOverlayUpdate = () => {
+  if (hurtOverlay > 0) {
+    hurtOverlayEl.style.background = `rgba(255,0,0,${Math.min(hurtOverlay, 0.3)})`;
+  } else {
+    hurtOverlayEl.style.background = 'transparent';
+  }
+};
+// Hook into animation frame
+const _origRAF = requestAnimationFrame;
+(function patchLoop() {
+  const origRender = renderer.render.bind(renderer);
+  renderer.render = function(s, c) {
+    origRender(s, c);
+    _hurtOverlayUpdate();
+  };
+})();
 
 // Welcome message
 addChatMessage(null, 'Welcome to BotCraft. Press T to chat.', 'system');

@@ -74,6 +74,18 @@ export function buildContextMessage(perception, memory, profile, agent) {
     lines.push(terrain);
   }
 
+  // ── Nearby mobs ────────────────────────────────────
+  const mobs = perception.nearbyMobs ?? [];
+  if (mobs.length > 0) {
+    lines.push('');
+    lines.push('## Nearby Creatures');
+    for (const m of mobs) {
+      const dir = describeDirection(pos, m.pos);
+      const hostile = ['lava_slime', 'shadow_creep'].includes(m.type) ? ' [HOSTILE]' : '';
+      lines.push(`- ${m.type}${hostile} id:${m.id} (${m.distance} blocks ${dir}, HP: ${m.hp}/${m.maxHp})`);
+    }
+  }
+
   // ── Nearby players ───────────────────────────────────
   const players = perception.nearbyPlayers ?? [];
   if (players.length > 0) {
@@ -88,6 +100,14 @@ export function buildContextMessage(perception, memory, profile, agent) {
     lines.push('');
     lines.push('## Nearby Players');
     lines.push('No one nearby.');
+  }
+
+  // ── Health status ──────────────────────────────────
+  const hp = perception.hp ?? agent.hp ?? 20;
+  const maxHp = perception.maxHp ?? agent.maxHp ?? 20;
+  if (hp < maxHp) {
+    lines.push('');
+    lines.push(`## Health: ${hp}/${maxHp} ${hp <= 5 ? '-- DANGER! Seek safety!' : ''}`);
   }
 
   // ── Memory ───────────────────────────────────────────

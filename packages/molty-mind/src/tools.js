@@ -176,6 +176,27 @@ export const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'attack_mob',
+      description: 'Attack a nearby mob. You must be within 8 blocks. Use the mob ID from your perception data. Deals 3 damage per hit. Hostile mobs will fight back!',
+      parameters: {
+        type: 'object',
+        properties: {
+          mob_id: {
+            type: 'string',
+            description: 'The ID of the mob to attack (from perception).',
+          },
+          reason: {
+            type: 'string',
+            description: 'Why you are attacking this mob.',
+          },
+        },
+        required: ['mob_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'wait',
       description: 'Do nothing this cycle. Use when there is nothing meaningful to do right now — observing is fine.',
       parameters: {

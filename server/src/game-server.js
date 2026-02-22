@@ -237,6 +237,10 @@ export class GameServer {
       rot: { x: 0, y: 0, z: 0, w: 1 },
       hotbar: [...DEFAULT_HOTBAR],
       selectedSlot: 0,
+      hp: 20,
+      maxHp: 20,
+      dead: false,
+      _hurtCooldown: 0, // ticks until can be hurt again
       ws,
       _sentChunks: new Set(),
       _lastCX: null,
@@ -335,12 +339,13 @@ export class GameServer {
     const { actionId, kind, args } = msg.payload ?? {};
 
     switch (kind) {
-      case ACTION.MOVE_TO:  return this._actionMove(ws, session, actionId, args);
-      case ACTION.MINE:     return this._actionMine(ws, session, actionId, args);
-      case ACTION.PLACE:    return this._actionPlace(ws, session, actionId, args);
-      case ACTION.EMOTE:    return this._actionEmote(ws, session, actionId, args);
-      case ACTION.SPEAK:    return this._onWorldChat(ws, args);
-      case 'Perceive':      return this._actionPerceive(ws, session, actionId, args);
+      case ACTION.MOVE_TO:    return this._actionMove(ws, session, actionId, args);
+      case ACTION.MINE:       return this._actionMine(ws, session, actionId, args);
+      case ACTION.PLACE:      return this._actionPlace(ws, session, actionId, args);
+      case ACTION.EMOTE:      return this._actionEmote(ws, session, actionId, args);
+      case ACTION.SPEAK:      return this._onWorldChat(ws, args);
+      case ACTION.ATTACK_MOB: return this._actionAttackMob(ws, session, actionId, args);
+      case 'Perceive':        return this._actionPerceive(ws, session, actionId, args);
       default:
         this._send(ws, S2C.WORLD_ACTION_RESULT, {
           actionId, ok: false,
@@ -451,6 +456,99 @@ export class GameServer {
     this._send(ws, S2C.WORLD_ACTION_RESULT, { actionId, ok: true });
   }
 
+  _actionAttackMob(ws, session, actionId, args) {
+    if (!args?.mobId) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'mobId required' },
+      });
+    }
+    if (session.dead) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'You are dead' },
+      });
+    }
+
+    const mob = this.mobs.mobs.get(args.mobId);
+    if (!mob) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.NOT_FOUND, message: 'Mob not found' },
+      });
+    }
+
+    // Check distance (max 6 blocks)
+    const dx = mob.pos.x - session.pos.x;
+    const dz = mob.pos.z - session.pos.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist > 8) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'Too far away' },
+      });
+    }
+
+    const damage = 3; // player attack damage
+    const killed = mob.hp - damage <= 0;
+    this.mobs.damageMob(args.mobId, damage, session);
+
+    // Track stat
+    if (killed) {
+      session.profile.stats.mobsKilled = (session.profile.stats.mobsKilled || 0) + 1;
+    }
+
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: true,
+      effects: { damage, killed, mobType: mob.type },
+    });
+  }
+
+  /** Damage a player from a mob attack. */
+  damagePlayer(session, damage, sourceType) {
+    if (session.dead || session._hurtCooldown > 0) return;
+    session._hurtCooldown = 10; // 0.5s cooldown at 20tps
+    session.hp = Math.max(0, session.hp - damage);
+
+    this._broadcastAll(S2C.PLAYER_HURT, {
+      accountId: session.accountId,
+      hp: session.hp,
+      maxHp: session.maxHp,
+      source: sourceType,
+    });
+
+    if (session.hp <= 0) {
+      session.dead = true;
+      this._broadcastAll(S2C.PLAYER_DEATH, {
+        accountId: session.accountId,
+        name: session.name,
+        source: sourceType,
+      });
+
+      // Respawn after 3 seconds
+      setTimeout(() => {
+        if (!this.sessions.has(session.ws)) return; // already disconnected
+        session.dead = false;
+        session.hp = session.maxHp;
+        const spawn = this._findSpawn();
+        session.pos = spawn;
+
+        this._send(session.ws, S2C.PLAYER_RESPAWN, {
+          accountId: session.accountId,
+          pos: spawn,
+          hp: session.hp,
+          maxHp: session.maxHp,
+        });
+
+        this._broadcast(S2C.PLAYER_MOVE, {
+          accountId: session.accountId,
+          pos: spawn,
+          rot: session.rot,
+        }, session.ws);
+      }, 3000);
+    }
+  }
+
   /** Perceive — returns world state around the agent (for SDK). */
   _actionPerceive(ws, session, actionId, args) {
     const { x, y, z } = session.pos;
@@ -495,15 +593,36 @@ export class GameServer {
     const biomeId = selectBiome(temp, moist);
     const biome = BIOME_DATA[biomeId];
 
+    // Gather nearby mobs
+    const nearbyMobs = [];
+    for (const [, mob] of this.mobs.mobs) {
+      const mdx = mob.pos.x - x;
+      const mdz = mob.pos.z - z;
+      const mobDist = Math.sqrt(mdx * mdx + mdz * mdz);
+      if (mobDist <= 32) {
+        nearbyMobs.push({
+          id: mob.id,
+          type: mob.type,
+          pos: mob.pos,
+          hp: mob.hp,
+          maxHp: mob.maxHp,
+          distance: Math.round(mobDist),
+        });
+      }
+    }
+
     this._send(ws, S2C.WORLD_ACTION_RESULT, {
       actionId, ok: true,
       effects: {
         position: session.pos,
+        hp: session.hp,
+        maxHp: session.maxHp,
         biome: biome?.name ?? 'Unknown',
         worldTime: this._worldTime,
         dayPhase: this._getDayPhase(),
         nearbyBlocks: nearbyBlocks.slice(0, 500), // cap for bandwidth
         nearbyPlayers,
+        nearbyMobs,
         blockCount: nearbyBlocks.length,
       },
     });
@@ -583,14 +702,30 @@ export class GameServer {
 
   // ── Spawn finding ─────────────────────────────────────────
   _findSpawn() {
-    // Find a solid block with 2 air blocks above it (player is 1.7 blocks tall)
+    // Search in a randomized area to avoid all players spawning on top of each other
+    const offsetX = Math.floor(Math.random() * 32) - 16;
+    const offsetZ = Math.floor(Math.random() * 32) - 16;
+
+    // Try random positions first, then fall back to systematic search
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const x = offsetX + Math.floor(Math.random() * 16);
+      const z = offsetZ + Math.floor(Math.random() * 16);
+      for (let y = CHUNK_HEIGHT - 3; y > SEA_LEVEL; y--) {
+        if (isSolid(this._getBlock(x, y, z)) &&
+            !isSolid(this._getBlock(x, y + 1, z)) &&
+            !isSolid(this._getBlock(x, y + 2, z))) {
+          return { x: x + 0.5, y: y + 1 + 1.7, z: z + 0.5 };
+        }
+      }
+    }
+
+    // Systematic fallback in chunk 0,0
     for (let x = 0; x < 16; x++) {
       for (let z = 0; z < 16; z++) {
         for (let y = CHUNK_HEIGHT - 3; y > SEA_LEVEL; y--) {
           if (isSolid(this._getBlock(x, y, z)) &&
               !isSolid(this._getBlock(x, y + 1, z)) &&
               !isSolid(this._getBlock(x, y + 2, z))) {
-            // Position feet at y+1 (on top of solid block), eyes at y+1+1.7
             return { x: x + 0.5, y: y + 1 + 1.7, z: z + 0.5 };
           }
         }
@@ -645,6 +780,11 @@ export class GameServer {
 
     // Day/night cycle
     this._worldTime = (this._worldTime + 1) % DAY_LENGTH_TICKS;
+
+    // Decrement player hurt cooldowns
+    for (const [, session] of this.sessions) {
+      if (session._hurtCooldown > 0) session._hurtCooldown--;
+    }
 
     // Update mobs every 4 ticks (5 times/sec)
     if (this._tick % 4 === 0) {

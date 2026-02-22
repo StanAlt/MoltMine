@@ -28,6 +28,9 @@ export const S2C = {
   MOB_MOVE:        'Mob/Move',
   MOB_DESPAWN:     'Mob/Despawn',
   MOB_HURT:        'Mob/Hurt',
+  PLAYER_HURT:     'Player/Hurt',
+  PLAYER_DEATH:    'Player/Death',
+  PLAYER_RESPAWN:  'Player/Respawn',
 };
 
 // ── Action kinds (World/Action.kind) ──────────────────────────
@@ -39,6 +42,7 @@ export const ACTION = {
   PICK_UP:   'PickUp',
   PLACE:     'Place',
   MINE:      'Mine',
+  ATTACK_MOB:'AttackMob',
 };
 
 // ── Chat channels ─────────────────────────────────────────────

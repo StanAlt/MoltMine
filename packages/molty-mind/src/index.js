@@ -335,6 +335,19 @@ ${blockNames}
           break;
         }
 
+        case 'attack_mob': {
+          const result = await this.agent.attackMob(input.mob_id);
+          this.memory.addEvent('mob_attacked', {
+            mobId: input.mob_id,
+            reason: input.reason,
+            ok: result.ok,
+            killed: result?.effects?.killed,
+            error: result.error?.message,
+          });
+          console.log(`[MoltyMind] Attack mob ${input.mob_id}: ${result.ok ? (result.effects?.killed ? 'KILLED!' : 'HIT') : `FAILED: ${result.error?.message ?? 'unknown'}`}`);
+          break;
+        }
+
         case 'wait': {
           console.log(`[MoltyMind] Waiting: ${input.reason || 'no reason given'}`);
           break;
