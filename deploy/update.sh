@@ -16,7 +16,12 @@ echo "==> Rebuilding client..."
 cd client-web && npx vite build --logLevel error && cd ..
 
 echo "==> Updating nginx config..."
-cp deploy/nginx-botcraft.conf /etc/nginx/sites-available/botcraft
+# Only overwrite nginx config if certbot hasn't configured HTTPS yet
+if grep -q "managed by Certbot" /etc/nginx/sites-available/botcraft 2>/dev/null; then
+  echo "    (skipping — certbot HTTPS config preserved)"
+else
+  cp deploy/nginx-botcraft.conf /etc/nginx/sites-available/botcraft
+fi
 nginx -t 2>&1 && systemctl restart nginx
 
 echo "==> Restarting services..."
