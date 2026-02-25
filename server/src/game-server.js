@@ -1011,7 +1011,7 @@ export class GameServer {
     const session = this.sessions.get(ws);
     if (!session) return;
 
-    const id = msg.id || msg.payload?.id;
+    const id = msg.payload?.id ?? msg.id;
     const args = msg.payload ?? {};
     const { x, y, z } = session.pos;
     const radius = Math.min(args.radius ?? 8, 16);
@@ -1084,7 +1084,7 @@ export class GameServer {
     const session = this.sessions.get(ws);
     if (!session) return;
 
-    const id = msg.id || msg.payload?.id;
+    const id = msg.payload?.id ?? msg.id;
     const { x, y, z } = session.pos;
     const rot = session.rot || { x: 0, y: 0, z: 0, w: 1 };
 
