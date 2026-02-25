@@ -15,6 +15,7 @@ export const LIQUID = 1 << 2;
 export const EMISSIVE = 1 << 3;
 export const MINEABLE = 1 << 4;
 export const PLACEABLE = 1 << 5;
+export const FLORA = 1 << 6;  // Cross-shaped vegetation (non-solid, walk-through)
 
 /** @type {Map<number, {id:number, name:string, color:number, flags:number, drop?:number}>} */
 export const BLOCKS = new Map();
@@ -59,6 +60,14 @@ export const PURPLE_GRASS  = def(29, 'Purple Grass',   0x7B4DAA, SOLID | MINEABL
 export const MUSHROOM_CAP  = def(30, 'Mushroom Cap',   0xCC3344, SOLID | MINEABLE);
 export const MUSHROOM_STEM = def(31, 'Mushroom Stem',  0xEDE0C8, SOLID | MINEABLE);
 
+// ── Vegetation (cross-shaped) ────────────────────────────────
+export const RED_FLOWER    = def(32, 'Red Flower',     0xDD3333, FLORA | TRANSPARENT | MINEABLE);
+export const YELLOW_FLOWER = def(33, 'Yellow Flower',  0xDDCC22, FLORA | TRANSPARENT | MINEABLE);
+export const BLUE_FLOWER   = def(34, 'Blue Flower',    0x4466DD, FLORA | TRANSPARENT | MINEABLE);
+export const TALL_GRASS    = def(35, 'Tall Grass',     0x4A8B2A, FLORA | TRANSPARENT);
+export const FERN          = def(36, 'Fern',           0x2D7A3A, FLORA | TRANSPARENT);
+export const DEAD_BUSH     = def(37, 'Dead Bush',      0x8B7355, FLORA | TRANSPARENT);
+
 // ── Ores ──────────────────────────────────────────────────────
 export const COAL_ORE    = def(40, 'Coal Ore',      0x3B3B3B, SOLID | MINEABLE);
 export const IRON_ORE    = def(41, 'Iron Ore',      0xC8A882, SOLID | MINEABLE);
@@ -89,6 +98,7 @@ export function isLiquid(id) { return !!(BLOCKS.get(id)?.flags & LIQUID); }
 export function isEmissive(id) { return !!(BLOCKS.get(id)?.flags & EMISSIVE); }
 export function isMineable(id) { return !!(BLOCKS.get(id)?.flags & MINEABLE); }
 export function isPlaceable(id) { return !!(BLOCKS.get(id)?.flags & PLACEABLE); }
+export function isFlora(id) { return !!(BLOCKS.get(id)?.flags & FLORA); }
 
 export function blockColor(id) { return BLOCKS.get(id)?.color ?? 0xFF00FF; }
 export function blockName(id) { return BLOCKS.get(id)?.name ?? 'Unknown'; }

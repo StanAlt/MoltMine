@@ -6,6 +6,10 @@
  */
 
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Connection } from './network/connection.js';
 import { VoxelWorld } from './engine/voxel-world.js';
 import { PlayerController } from './engine/player-controller.js';
@@ -70,10 +74,31 @@ document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 300);
 
+// ── Post-processing pipeline ──────────────────────────────
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+// Bloom pass — makes emissive blocks (crystal, lava, moltium, glowstone) glow
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.35,  // strength
+  0.4,   // radius
+  0.85,  // threshold — only bright (emissive) things bloom
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+
+// Underwater overlay
+const underwaterOverlay = document.createElement('div');
+underwaterOverlay.id = 'underwater-overlay';
+underwaterOverlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:5;transition:opacity 0.3s,background 0.3s;opacity:0;background:radial-gradient(ellipse at center,rgba(10,40,70,0.35) 0%,rgba(5,20,50,0.55) 100%)';
+document.body.appendChild(underwaterOverlay);
+
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 const sky = createSky(scene);
@@ -385,10 +410,21 @@ function gameLoop(now) {
     connection.sendPlace(placeTarget, hotbar[selectedSlot]);
   }
 
-  // Water animation — gentle opacity/color pulse
-  if (voxelWorld.waterMaterial) {
-    const wt = now * 0.001;
-    voxelWorld.waterMaterial.opacity = 0.5 + Math.sin(wt * 0.8) * 0.08;
+  // Water shader animation
+  if (voxelWorld.waterMaterial?.uniforms) {
+    voxelWorld.waterMaterial.uniforms.uTime.value = now * 0.001;
+    voxelWorld.waterMaterial.uniforms.uCamPos.value.copy(camera.position);
+  }
+
+  // Underwater visual effects
+  if (controller.headUnderwater) {
+    underwaterOverlay.style.opacity = '1';
+    scene.fog.density = 0.04; // thick underwater fog
+  } else if (controller.inWater) {
+    underwaterOverlay.style.opacity = '0.3';
+    scene.fog.density = 0.01;
+  } else {
+    underwaterOverlay.style.opacity = '0';
   }
 
   // Hurt flash overlay
@@ -396,8 +432,12 @@ function gameLoop(now) {
     hurtOverlay -= dt;
   }
 
-  // Day/night cycle
+  // Day/night cycle — also resets fog density for above-water
   updateSky(sky, scene, worldTime, dayLength);
+  if (!controller.inWater && !controller.headUnderwater) {
+    // sky.js sets fog color; we just make sure density is normal
+    scene.fog.density = 0.006;
+  }
 
   // Update HUD + minimap
   updateHUD();
@@ -407,8 +447,8 @@ function gameLoop(now) {
     updateMinimap();
   }
 
-  // Render
-  renderer.render(scene, camera);
+  // Render with post-processing (bloom on emissive blocks)
+  composer.render();
 }
 
 // ── HUD ─────────────────────────────────────────────────────
@@ -434,7 +474,9 @@ function updateHUD() {
       ? `<span class="hud-label">Target</span> ${blockName(voxelWorld.getBlock(controller.targetBlock.x, controller.targetBlock.y, controller.targetBlock.z))}`
       : '',
     myInventory.length > 0 ? `<span class="hud-label">Items</span> ${myInventory.length}/12 [I]` : '',
-    controller.flying ? `<span class="hud-label">Mode</span> Flying` : '',
+    controller.flying ? `<span class="hud-label">Mode</span> Flying` :
+      controller.headUnderwater ? `<span class="hud-label" style="color:#4af">Mode</span> <span style="color:#4af">Underwater</span>` :
+      controller.inWater ? `<span class="hud-label" style="color:#6cf">Mode</span> <span style="color:#6cf">Swimming</span>` : '',
     playerDead ? '<span style="color:#f44;font-weight:bold">DEAD — Respawning...</span>' : '',
   ].filter(Boolean).join('<br>');
 

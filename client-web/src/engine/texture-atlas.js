@@ -54,6 +54,12 @@ export const TILE = {
   DEFAULT: 33,        // flat white (pure vertex color)
   TEAL_GRASS_TOP: 34,
   PURPLE_GRASS_TOP: 35,
+  FLOWER_RED: 36,
+  FLOWER_YELLOW: 37,
+  FLOWER_BLUE: 38,
+  TALL_GRASS: 39,
+  FERN: 40,
+  DEAD_BUSH: 41,
 };
 
 /**
@@ -119,6 +125,14 @@ mapBlock(60, TILE.WOOL, TILE.WOOL, TILE.WOOL);              // Orange Wool
 mapBlock(61, TILE.WOOL, TILE.WOOL, TILE.WOOL);              // Black Wool
 mapBlock(62, TILE.CONCRETE, TILE.CONCRETE, TILE.CONCRETE);  // White Concrete
 mapBlock(63, TILE.CONCRETE, TILE.CONCRETE, TILE.CONCRETE);  // Gray Concrete
+
+// Vegetation (cross-shaped, all faces use same tile)
+mapBlock(32, TILE.FLOWER_RED, TILE.FLOWER_RED, TILE.FLOWER_RED);     // Red Flower
+mapBlock(33, TILE.FLOWER_YELLOW, TILE.FLOWER_YELLOW, TILE.FLOWER_YELLOW); // Yellow Flower
+mapBlock(34, TILE.FLOWER_BLUE, TILE.FLOWER_BLUE, TILE.FLOWER_BLUE);   // Blue Flower
+mapBlock(35, TILE.TALL_GRASS, TILE.TALL_GRASS, TILE.TALL_GRASS);     // Tall Grass
+mapBlock(36, TILE.FERN, TILE.FERN, TILE.FERN);                      // Fern
+mapBlock(37, TILE.DEAD_BUSH, TILE.DEAD_BUSH, TILE.DEAD_BUSH);       // Dead Bush
 
 /**
  * Get the tile index for a block face.
@@ -205,6 +219,12 @@ export function createTextureAtlas() {
   _drawTile(ctx, TILE.PRISM_GLASS, _prismGlassPattern);
   _drawTile(ctx, TILE.TEAL_GRASS_TOP, _grassTopPattern);
   _drawTile(ctx, TILE.PURPLE_GRASS_TOP, _grassTopPattern);
+  _drawTile(ctx, TILE.FLOWER_RED, _flowerPattern);
+  _drawTile(ctx, TILE.FLOWER_YELLOW, _flowerPattern);
+  _drawTile(ctx, TILE.FLOWER_BLUE, _flowerPattern);
+  _drawTile(ctx, TILE.TALL_GRASS, _tallGrassPattern);
+  _drawTile(ctx, TILE.FERN, _fernPattern);
+  _drawTile(ctx, TILE.DEAD_BUSH, _deadBushPattern);
 
   // Create Three.js texture
   const texture = new THREE.CanvasTexture(canvas);
@@ -676,6 +696,138 @@ function _prismGlassPattern(data) {
       if ((x + y) % 5 === 0) v = 255;
       if ((x - y + 16) % 7 === 0) v = 250;
       _setPixel(data, x, y, v, v, v);
+    }
+  }
+}
+
+// ── Vegetation patterns ──────────────────────────────────────
+
+function _setPixelAlpha(data, x, y, r, g, b, a) {
+  const i = (y * TILE_SIZE + x) * 4;
+  data[i] = r;
+  data[i + 1] = g;
+  data[i + 2] = b;
+  data[i + 3] = a;
+}
+
+function _flowerPattern(data) {
+  // Transparent background with a stem and flower head
+  for (let y = 0; y < TILE_SIZE; y++) {
+    for (let x = 0; x < TILE_SIZE; x++) {
+      // Stem (center column, bottom half)
+      if (x >= 7 && x <= 8 && y >= 8) {
+        const v = 160 + (_hash(x, y) - 0.5) * 30;
+        _setPixelAlpha(data, x, y, v, v, v, 255);
+      }
+      // Flower petals (top area, cross pattern)
+      else if (y >= 2 && y <= 8) {
+        const cx = 7.5, cy = 5;
+        const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+        if (dist < 3.5 && (Math.abs(x - cx) < 2.5 || Math.abs(y - cy) < 2.5 || dist < 2)) {
+          const v = 200 + (_hash(x + 3, y + 7) - 0.5) * 40;
+          _setPixelAlpha(data, x, y, v, v, v, 255);
+        }
+        // Center dot
+        else if (dist < 1.5) {
+          _setPixelAlpha(data, x, y, 240, 240, 240, 255);
+        } else {
+          _setPixelAlpha(data, x, y, 0, 0, 0, 0);
+        }
+      }
+      // Leaf on stem
+      else if (y >= 9 && y <= 11 && x >= 5 && x <= 6) {
+        const v = 170 + (_hash(x, y) - 0.5) * 20;
+        _setPixelAlpha(data, x, y, v, v, v, 255);
+      } else {
+        _setPixelAlpha(data, x, y, 0, 0, 0, 0);
+      }
+    }
+  }
+}
+
+function _tallGrassPattern(data) {
+  // Multiple grass blades of varying height
+  for (let y = 0; y < TILE_SIZE; y++) {
+    for (let x = 0; x < TILE_SIZE; x++) {
+      let visible = false;
+      // Several grass blades at different x positions
+      const bladePositions = [2, 5, 7, 8, 10, 13];
+      for (const bx of bladePositions) {
+        const bladeH = 6 + Math.floor(_hash(bx, 0) * 8);
+        const bladeTop = TILE_SIZE - bladeH;
+        const sway = Math.floor(Math.sin(bx * 1.5) * 1.5);
+        if (y >= bladeTop && Math.abs(x - bx - sway * (1 - (y - bladeTop) / bladeH)) < 1) {
+          visible = true;
+          break;
+        }
+      }
+      if (visible) {
+        const grad = 1 - y / TILE_SIZE;
+        const v = 170 + grad * 60 + (_hash(x, y) - 0.5) * 30;
+        _setPixelAlpha(data, x, y, Math.max(130, Math.min(240, v)), Math.max(130, Math.min(240, v)), Math.max(130, Math.min(240, v)), 255);
+      } else {
+        _setPixelAlpha(data, x, y, 0, 0, 0, 0);
+      }
+    }
+  }
+}
+
+function _fernPattern(data) {
+  // Fern with fronds spreading from center
+  for (let y = 0; y < TILE_SIZE; y++) {
+    for (let x = 0; x < TILE_SIZE; x++) {
+      let visible = false;
+      // Central stem
+      if (x >= 7 && x <= 8 && y >= 4) visible = true;
+      // Fronds at angles
+      const fronds = [
+        { startY: 5, dir: -1 }, { startY: 7, dir: 1 },
+        { startY: 9, dir: -1 }, { startY: 11, dir: 1 },
+      ];
+      for (const f of fronds) {
+        const fy = f.startY;
+        const dy = y - fy;
+        if (dy >= 0 && dy < 3) {
+          const fx = 7.5 + f.dir * (dy * 2 + 1);
+          if (Math.abs(x - fx) < 1.5) visible = true;
+        }
+      }
+      if (visible) {
+        const v = 180 + (_hash(x + 11, y + 3) - 0.5) * 40;
+        _setPixelAlpha(data, x, y, Math.max(140, Math.min(230, v)), Math.max(140, Math.min(230, v)), Math.max(140, Math.min(230, v)), 255);
+      } else {
+        _setPixelAlpha(data, x, y, 0, 0, 0, 0);
+      }
+    }
+  }
+}
+
+function _deadBushPattern(data) {
+  // Bare twigs branching from center
+  for (let y = 0; y < TILE_SIZE; y++) {
+    for (let x = 0; x < TILE_SIZE; x++) {
+      let visible = false;
+      // Main stem
+      if (x >= 7 && x <= 8 && y >= 6) visible = true;
+      // Branches
+      const branches = [
+        [7, 6, -2, -3], [8, 6, 2, -3],
+        [6, 8, -3, -2], [9, 8, 3, -2],
+        [5, 10, -2, -1], [10, 10, 2, -1],
+      ];
+      for (const [bx, by, dx, dy] of branches) {
+        for (let t = 0; t < 4; t++) {
+          const px = Math.round(bx + dx * t / 3);
+          const py = Math.round(by + dy * t / 3);
+          if (x === px && y === py) visible = true;
+        }
+      }
+      if (visible) {
+        const v = 175 + (_hash(x, y) - 0.5) * 30;
+        _setPixelAlpha(data, x, y, Math.max(140, Math.min(210, v)), Math.max(140, Math.min(210, v)), Math.max(140, Math.min(210, v)), 255);
+      } else {
+        _setPixelAlpha(data, x, y, 0, 0, 0, 0);
+      }
     }
   }
 }

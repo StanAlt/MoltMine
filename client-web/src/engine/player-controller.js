@@ -5,12 +5,16 @@
 
 import * as THREE from 'three';
 import { CHUNK_HEIGHT } from '@shared/protocol.js';
-import { AIR, isSolid, WATER } from '@shared/blocks.js';
+import { AIR, isSolid, isLiquid, WATER } from '@shared/blocks.js';
 
 const MOVE_SPEED = 6;        // blocks per second
 const FLY_SPEED = 12;        // faster in fly mode
+const SWIM_SPEED = 3;        // slower in water
 const JUMP_VELOCITY = 8;
 const GRAVITY = -22;
+const WATER_GRAVITY = -4;    // much less gravity in water
+const BUOYANCY = 6;          // upward force when submerged
+const WATER_DRAG = 0.92;     // velocity damping in water
 const MOUSE_SENSITIVITY = 0.002;
 const REACH = 6;             // max mining/placing distance
 const PLAYER_HEIGHT = 1.7;
@@ -28,6 +32,9 @@ export class PlayerController {
     this.onGround = false;
     this.locked = false;
     this.flying = false;
+    this.inWater = false;       // feet in water
+    this.headUnderwater = false; // head submerged
+    this._swimBob = 0;          // gentle camera bob in water
 
     // Input state
     this.keys = {};
@@ -126,7 +133,15 @@ export class PlayerController {
       // Move with collision (optional in fly — skip for now for freedom)
       this.position.addScaledVector(this.velocity, dt);
     } else {
-      // ── Walk mode: horizontal WASD, gravity, jumping ──
+      // ── Check water state ──
+      const feetY = Math.floor(this.position.y - PLAYER_HEIGHT);
+      const headY = Math.floor(this.position.y);
+      const bx = Math.floor(this.position.x);
+      const bz = Math.floor(this.position.z);
+      this.inWater = isLiquid(this.world.getBlock(bx, feetY, bz)) ||
+                     isLiquid(this.world.getBlock(bx, feetY + 1, bz));
+      this.headUnderwater = isLiquid(this.world.getBlock(bx, headY, bz));
+
       const walkForward = camForward.clone();
       walkForward.y = 0;
       walkForward.normalize();
@@ -139,18 +154,45 @@ export class PlayerController {
       if (this.keys['KeyD'] || this.keys['ArrowRight']) moveDir.add(walkRight);
       if (moveDir.lengthSq() > 0) moveDir.normalize();
 
-      const speed = this.keys['ShiftLeft'] ? MOVE_SPEED * 1.5 : MOVE_SPEED;
-      this.velocity.x = moveDir.x * speed;
-      this.velocity.z = moveDir.z * speed;
+      if (this.inWater) {
+        // ── Swimming mode ──
+        const speed = SWIM_SPEED;
+        this.velocity.x = moveDir.x * speed;
+        this.velocity.z = moveDir.z * speed;
 
-      // Jump
-      if ((this.keys['Space'] || this.keys['KeyJ']) && this.onGround) {
-        this.velocity.y = JUMP_VELOCITY;
-        this.onGround = false;
+        // Space = swim up, Shift = dive down
+        if (this.keys['Space']) {
+          this.velocity.y = BUOYANCY;
+        } else if (this.keys['ShiftLeft'] || this.keys['ShiftRight']) {
+          this.velocity.y = -BUOYANCY * 0.7;
+        } else {
+          // Gentle buoyancy + water gravity
+          this.velocity.y += WATER_GRAVITY * dt;
+          this.velocity.y += BUOYANCY * 0.3 * dt;
+        }
+
+        // Water drag
+        this.velocity.y *= WATER_DRAG;
+
+        // Swim bob
+        this._swimBob += dt * 3;
+
+      } else {
+        // ── Walk mode ──
+        const speed = this.keys['ShiftLeft'] ? MOVE_SPEED * 1.5 : MOVE_SPEED;
+        this.velocity.x = moveDir.x * speed;
+        this.velocity.z = moveDir.z * speed;
+
+        // Jump
+        if ((this.keys['Space'] || this.keys['KeyJ']) && this.onGround) {
+          this.velocity.y = JUMP_VELOCITY;
+          this.onGround = false;
+        }
+
+        // Gravity
+        this.velocity.y += GRAVITY * dt;
+        this._swimBob = 0;
       }
-
-      // Gravity
-      this.velocity.y += GRAVITY * dt;
 
       // Collision detection and position update
       this._moveAxis('y', this.velocity.y * dt);
@@ -171,8 +213,11 @@ export class PlayerController {
       this.velocity.y = 0;
     }
 
-    // Update camera position
+    // Update camera position (with swim bob)
     this.camera.position.copy(this.position);
+    if (this.inWater && !this.flying) {
+      this.camera.position.y += Math.sin(this._swimBob) * 0.05;
+    }
 
     // Raycast for block targeting
     this._updateRaycast();
