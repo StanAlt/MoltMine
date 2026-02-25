@@ -10,6 +10,7 @@ import { randomUUID } from 'crypto';
 import { WorldGen } from './world-gen.js';
 import { Persistence } from './persistence.js';
 import { MobManager } from './mob-manager.js';
+import { ItemManager } from './item-manager.js';
 import {
   C2S, S2C, ACTION, CHANNEL, ERROR,
   CHUNK_SIZE, CHUNK_HEIGHT, SEA_LEVEL, WORLD_SEED,
@@ -73,6 +74,9 @@ export class GameServer {
 
     // Mob system
     this.mobs = new MobManager(this);
+
+    // Item system
+    this.items = new ItemManager(this);
 
     this.wss.on('connection', (ws) => this._onConnect(ws));
   }
@@ -316,6 +320,10 @@ export class GameServer {
       isAgent: session.isAgent,
     }, ws);
 
+    // Initialize inventory and send items
+    this.items.initPlayer(session.accountId);
+    this.items.sendInitialState(ws, session);
+
     // Send existing mobs to the new player
     for (const mob of this.mobs.mobs.values()) {
       this._send(ws, S2C.MOB_SPAWN, {
@@ -344,8 +352,13 @@ export class GameServer {
       case ACTION.PLACE:      return this._actionPlace(ws, session, actionId, args);
       case ACTION.EMOTE:      return this._actionEmote(ws, session, actionId, args);
       case ACTION.SPEAK:      return this._onWorldChat(ws, args);
-      case ACTION.ATTACK_MOB: return this._actionAttackMob(ws, session, actionId, args);
-      case 'Perceive':        return this._actionPerceive(ws, session, actionId, args);
+      case ACTION.ATTACK_MOB:   return this._actionAttackMob(ws, session, actionId, args);
+      case ACTION.PICK_UP_ITEM: return this._actionPickUpItem(ws, session, actionId, args);
+      case ACTION.DROP_ITEM:    return this._actionDropItem(ws, session, actionId, args);
+      case ACTION.EQUIP_ITEM:   return this._actionEquipItem(ws, session, actionId, args);
+      case ACTION.UNEQUIP_ITEM: return this._actionUnequipItem(ws, session, actionId, args);
+      case ACTION.TRADE_OFFER:  return this._actionTradeOffer(ws, session, actionId, args);
+      case 'Perceive':          return this._actionPerceive(ws, session, actionId, args);
       default:
         this._send(ws, S2C.WORLD_ACTION_RESULT, {
           actionId, ok: false,
@@ -504,6 +517,83 @@ export class GameServer {
     });
   }
 
+  // ── Item actions ──────────────────────────────────────────
+
+  _actionPickUpItem(ws, session, actionId, args) {
+    if (!args?.worldItemId) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'worldItemId required' },
+      });
+    }
+    const result = this.items.pickUpItem(session, args.worldItemId);
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: result.ok,
+      effects: result.ok ? { item: result.item } : undefined,
+      error: result.ok ? undefined : { code: ERROR.INVALID_ARGUMENT, message: result.error },
+    });
+  }
+
+  _actionDropItem(ws, session, actionId, args) {
+    if (args?.inventoryIndex == null) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'inventoryIndex required' },
+      });
+    }
+    const result = this.items.dropItem(session, args.inventoryIndex);
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: result.ok,
+      effects: result.ok ? { item: result.item } : undefined,
+      error: result.ok ? undefined : { code: ERROR.INVALID_ARGUMENT, message: result.error },
+    });
+  }
+
+  _actionEquipItem(ws, session, actionId, args) {
+    if (args?.inventoryIndex == null) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'inventoryIndex required' },
+      });
+    }
+    const result = this.items.equipItem(session, args.inventoryIndex);
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: result.ok,
+      effects: result.ok ? { item: result.item, slot: result.slot } : undefined,
+      error: result.ok ? undefined : { code: ERROR.INVALID_ARGUMENT, message: result.error },
+    });
+  }
+
+  _actionUnequipItem(ws, session, actionId, args) {
+    if (!args?.slot) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'slot required' },
+      });
+    }
+    const result = this.items.unequipItem(session, args.slot);
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: result.ok,
+      effects: result.ok ? { item: result.item, slot: result.slot } : undefined,
+      error: result.ok ? undefined : { code: ERROR.INVALID_ARGUMENT, message: result.error },
+    });
+  }
+
+  _actionTradeOffer(ws, session, actionId, args) {
+    if (!args?.toName || args?.inventoryIndex == null) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'toName and inventoryIndex required' },
+      });
+    }
+    const result = this.items.tradeOffer(session, args.toName, args.inventoryIndex);
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: result.ok,
+      effects: result.ok ? { item: result.item, to: result.to } : undefined,
+      error: result.ok ? undefined : { code: ERROR.INVALID_ARGUMENT, message: result.error },
+    });
+  }
+
   /** Damage a player from a mob attack. */
   damagePlayer(session, damage, sourceType) {
     if (session.dead || session._hurtCooldown > 0) return;
@@ -611,6 +701,13 @@ export class GameServer {
       }
     }
 
+    // Gather nearby items on ground
+    const nearbyItems = this.items.getNearbyItems(session.pos, 32);
+
+    // Own inventory and equipment
+    const inventory = this.items.getInventoryForPerception(session.accountId);
+    const equipment = this.items.getEquipmentForPerception(session.accountId);
+
     this._send(ws, S2C.WORLD_ACTION_RESULT, {
       actionId, ok: true,
       effects: {
@@ -620,9 +717,12 @@ export class GameServer {
         biome: biome?.name ?? 'Unknown',
         worldTime: this._worldTime,
         dayPhase: this._getDayPhase(),
-        nearbyBlocks: nearbyBlocks.slice(0, 500), // cap for bandwidth
+        nearbyBlocks: nearbyBlocks.slice(0, 500),
         nearbyPlayers,
         nearbyMobs,
+        nearbyItems,
+        inventory,
+        equipment,
         blockCount: nearbyBlocks.length,
       },
     });
@@ -789,6 +889,11 @@ export class GameServer {
     // Update mobs every 4 ticks (5 times/sec)
     if (this._tick % 4 === 0) {
       this.mobs.update(this._tick, this._getDayPhase());
+    }
+
+    // Update items every 4 ticks
+    if (this._tick % 4 === 0) {
+      this.items.update(this._tick);
     }
 
     // Broadcast time every 2 seconds (40 ticks)

@@ -101,4 +101,44 @@ export class Connection {
       args: { mobId },
     });
   }
+
+  sendPickUpItem(worldItemId) {
+    this.send(C2S.WORLD_ACTION, {
+      actionId: String(Date.now()),
+      kind: ACTION.PICK_UP_ITEM,
+      args: { worldItemId },
+    });
+  }
+
+  sendDropItem(inventoryIndex) {
+    this.send(C2S.WORLD_ACTION, {
+      actionId: String(Date.now()),
+      kind: ACTION.DROP_ITEM,
+      args: { inventoryIndex },
+    });
+  }
+
+  sendEquipItem(inventoryIndex) {
+    this.send(C2S.WORLD_ACTION, {
+      actionId: String(Date.now()),
+      kind: ACTION.EQUIP_ITEM,
+      args: { inventoryIndex },
+    });
+  }
+
+  sendUnequipItem(slot) {
+    this.send(C2S.WORLD_ACTION, {
+      actionId: String(Date.now()),
+      kind: ACTION.UNEQUIP_ITEM,
+      args: { slot },
+    });
+  }
+
+  sendTradeOffer(toName, inventoryIndex) {
+    this.send(C2S.WORLD_ACTION, {
+      actionId: String(Date.now()),
+      kind: ACTION.TRADE_OFFER,
+      args: { toName, inventoryIndex },
+    });
+  }
 }

@@ -348,6 +348,34 @@ ${blockNames}
           break;
         }
 
+        case 'pick_up_item': {
+          const result = await this.agent.pickUpItem(input.world_item_id);
+          this.memory.addEvent('item_picked_up', { item: result?.effects?.item, ok: result.ok });
+          console.log(`[MoltyMind] Pick up: ${result.ok ? result.effects.item : result.error?.message}`);
+          break;
+        }
+
+        case 'equip_item': {
+          const result = await this.agent.equipItem(input.inventory_index);
+          this.memory.addEvent('item_equipped', { item: result?.effects?.item, slot: result?.effects?.slot, ok: result.ok });
+          console.log(`[MoltyMind] Equip: ${result.ok ? `${result.effects.item} → ${result.effects.slot}` : result.error?.message}`);
+          break;
+        }
+
+        case 'drop_item': {
+          const result = await this.agent.dropItem(input.inventory_index);
+          this.memory.addEvent('item_dropped', { item: result?.effects?.item, ok: result.ok });
+          console.log(`[MoltyMind] Drop: ${result.ok ? result.effects.item : result.error?.message}`);
+          break;
+        }
+
+        case 'trade_item': {
+          const result = await this.agent.tradeItem(input.to_name, input.inventory_index);
+          this.memory.addEvent('item_traded', { item: result?.effects?.item, to: input.to_name, ok: result.ok });
+          console.log(`[MoltyMind] Trade: ${result.ok ? `${result.effects.item} → ${input.to_name}` : result.error?.message}`);
+          break;
+        }
+
         case 'wait': {
           console.log(`[MoltyMind] Waiting: ${input.reason || 'no reason given'}`);
           break;

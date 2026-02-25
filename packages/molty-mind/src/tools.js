@@ -197,6 +197,63 @@ export const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'pick_up_item',
+      description: 'Pick up an item from the ground. Use the worldId from perception data. Must be within 4 blocks.',
+      parameters: {
+        type: 'object',
+        properties: {
+          world_item_id: { type: 'string', description: 'The world ID of the item to pick up (from perception).' },
+        },
+        required: ['world_item_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'equip_item',
+      description: 'Equip an item from your inventory. It goes to the appropriate slot (head, body, legs, feet, mainHand, offHand). If something is already in that slot, it swaps back to inventory.',
+      parameters: {
+        type: 'object',
+        properties: {
+          inventory_index: { type: 'integer', description: 'Index of the item in your inventory to equip.' },
+        },
+        required: ['inventory_index'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'drop_item',
+      description: 'Drop an item from your inventory onto the ground.',
+      parameters: {
+        type: 'object',
+        properties: {
+          inventory_index: { type: 'integer', description: 'Index of the item in your inventory to drop.' },
+        },
+        required: ['inventory_index'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'trade_item',
+      description: 'Give an item from your inventory to another player or bot. They must be nearby.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to_name: { type: 'string', description: 'Name of the player/bot to give the item to.' },
+          inventory_index: { type: 'integer', description: 'Index of the item in your inventory to give.' },
+        },
+        required: ['to_name', 'inventory_index'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'wait',
       description: 'Do nothing this cycle. Use when there is nothing meaningful to do right now — observing is fine.',
       parameters: {

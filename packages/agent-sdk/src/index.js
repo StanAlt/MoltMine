@@ -171,6 +171,26 @@ export class BotCraftAgent {
     return this._action('AttackMob', { mobId });
   }
 
+  pickUpItem(worldItemId) {
+    return this._action('PickUpItem', { worldItemId });
+  }
+
+  dropItem(inventoryIndex) {
+    return this._action('DropItem', { inventoryIndex });
+  }
+
+  equipItem(inventoryIndex) {
+    return this._action('EquipItem', { inventoryIndex });
+  }
+
+  unequipItem(slot) {
+    return this._action('UnequipItem', { slot });
+  }
+
+  tradeItem(toName, inventoryIndex) {
+    return this._action('TradeOffer', { toName, inventoryIndex });
+  }
+
   /**
    * Perceive the world around the agent.
    * Returns nearby blocks, players, biome, and time of day.

@@ -31,18 +31,29 @@ export const S2C = {
   PLAYER_HURT:     'Player/Hurt',
   PLAYER_DEATH:    'Player/Death',
   PLAYER_RESPAWN:  'Player/Respawn',
+  ITEM_SPAWN:      'Item/Spawn',
+  ITEM_DESPAWN:    'Item/Despawn',
+  INVENTORY_UPDATE:'Inventory/Update',
+  EQUIP_UPDATE:    'Equip/Update',
+  TRADE_REQUEST:   'Trade/Request',
+  TRADE_COMPLETE:  'Trade/Complete',
 };
 
 // ── Action kinds (World/Action.kind) ──────────────────────────
 export const ACTION = {
-  MOVE_TO:   'MoveTo',
-  EMOTE:     'Emote',
-  SPEAK:     'Speak',
-  INTERACT:  'Interact',
-  PICK_UP:   'PickUp',
-  PLACE:     'Place',
-  MINE:      'Mine',
-  ATTACK_MOB:'AttackMob',
+  MOVE_TO:    'MoveTo',
+  EMOTE:      'Emote',
+  SPEAK:      'Speak',
+  INTERACT:   'Interact',
+  PICK_UP:    'PickUp',
+  PLACE:      'Place',
+  MINE:       'Mine',
+  ATTACK_MOB: 'AttackMob',
+  PICK_UP_ITEM: 'PickUpItem',
+  DROP_ITEM:  'DropItem',
+  EQUIP_ITEM: 'EquipItem',
+  UNEQUIP_ITEM:'UnequipItem',
+  TRADE_OFFER:'TradeOffer',
 };
 
 // ── Chat channels ─────────────────────────────────────────────

@@ -86,6 +86,16 @@ export function buildContextMessage(perception, memory, profile, agent) {
     }
   }
 
+  // ── Nearby items on ground ─────────────────────────────
+  const groundItems = perception.nearbyItems ?? [];
+  if (groundItems.length > 0) {
+    lines.push('');
+    lines.push('## Items on Ground');
+    for (const item of groundItems.slice(0, 10)) {
+      lines.push(`- ${item.name} (${item.rarity} ${item.category}) worldId:${item.worldId} (${item.distance} blocks away)`);
+    }
+  }
+
   // ── Nearby players ───────────────────────────────────
   const players = perception.nearbyPlayers ?? [];
   if (players.length > 0) {
@@ -108,6 +118,27 @@ export function buildContextMessage(perception, memory, profile, agent) {
   if (hp < maxHp) {
     lines.push('');
     lines.push(`## Health: ${hp}/${maxHp} ${hp <= 5 ? '-- DANGER! Seek safety!' : ''}`);
+  }
+
+  // ── Inventory & Equipment ──────────────────────────────
+  const inventory = perception.inventory ?? [];
+  const equipment = perception.equipment ?? {};
+  const equippedSlots = Object.entries(equipment).filter(([, v]) => v);
+  if (inventory.length > 0 || equippedSlots.length > 0) {
+    lines.push('');
+    lines.push('## Your Inventory');
+    if (equippedSlots.length > 0) {
+      lines.push('Equipped:');
+      for (const [slot, desc] of equippedSlots) {
+        lines.push(`  ${slot}: ${desc}`);
+      }
+    }
+    if (inventory.length > 0) {
+      lines.push('Backpack:');
+      for (const item of inventory) {
+        lines.push(`  [${item.slot}] ${item.name} (${item.rarity} ${item.category})`);
+      }
+    }
   }
 
   // ── Memory ───────────────────────────────────────────

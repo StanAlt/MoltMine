@@ -12,6 +12,7 @@ import { PlayerController } from './engine/player-controller.js';
 import { RemotePlayers } from './engine/remote-players.js';
 import { ParticleSystem } from './engine/particles.js';
 import { MobRenderer } from './engine/mobs.js';
+import { ItemRenderer, applyEquipmentVisuals } from './engine/items.js';
 import { createSky, updateSky } from './engine/sky.js';
 import { S2C, CHUNK_SIZE, CHUNK_HEIGHT, TICK_RATE } from '@shared/protocol.js';
 import { blockName, DEFAULT_HOTBAR, blockColor, BLOCKS, isEmissive } from '@shared/blocks.js';
@@ -39,7 +40,9 @@ const minimapCanvas = document.getElementById('minimap-canvas');
 const activityFeed  = document.getElementById('activity-feed');
 
 // ── State ───────────────────────────────────────────────────
-let connection, voxelWorld, controller, remotePlayers, particles, mobRenderer;
+let connection, voxelWorld, controller, remotePlayers, particles, mobRenderer, itemRenderer;
+let myInventory = [];
+let myEquipment = {};
 let myAccountId = null;
 let myProfile = null;
 let hotbar = [...DEFAULT_HOTBAR];
@@ -244,6 +247,43 @@ function setupNetworkHandlers() {
     }
   });
 
+  // ── Item events ──
+  connection.on(S2C.ITEM_SPAWN, (payload) => {
+    itemRenderer?.addWorldItem(payload.id, payload.itemId, payload.pos);
+  });
+
+  connection.on(S2C.ITEM_DESPAWN, (payload) => {
+    itemRenderer?.removeWorldItem(payload.id);
+  });
+
+  connection.on(S2C.INVENTORY_UPDATE, (payload) => {
+    myInventory = payload.items || [];
+    if (inventoryOpen) {
+      const panel = document.getElementById('inventory-panel');
+      if (panel) renderInventoryPanel(panel);
+    }
+  });
+
+  connection.on(S2C.EQUIP_UPDATE, (payload) => {
+    if (payload.accountId === myAccountId) {
+      myEquipment = payload.equipment || {};
+      if (inventoryOpen) {
+        const panel = document.getElementById('inventory-panel');
+        if (panel) renderInventoryPanel(panel);
+      }
+    }
+    // Apply visuals to remote player
+    const rp = remotePlayers?.players.get(payload.accountId);
+    if (rp) {
+      applyEquipmentVisuals(rp.group, payload.equipment);
+    }
+  });
+
+  connection.on(S2C.TRADE_COMPLETE, (payload) => {
+    addChatMessage(null, `${payload.from} gave ${payload.itemName} to ${payload.to}`, 'system');
+    addActivity(payload.from, `traded ${payload.itemName}`, true);
+  });
+
   connection.on('disconnected', () => {
     addChatMessage(null, 'Disconnected from server', 'system');
   });
@@ -288,6 +328,7 @@ scene.add(controller.highlightMesh);
 remotePlayers = new RemotePlayers(scene, camera);
 particles = new ParticleSystem(scene);
 mobRenderer = new MobRenderer(scene, camera);
+itemRenderer = new ItemRenderer(scene, camera);
 
 // ── Game loop ───────────────────────────────────────────────
 let lastTime = performance.now();
@@ -310,6 +351,7 @@ function gameLoop(now) {
   remotePlayers.update(dt);
   particles.update(dt);
   mobRenderer.update(dt);
+  itemRenderer?.update(dt);
 
   // Send position to server periodically
   moveAccum += dt;
@@ -391,6 +433,7 @@ function updateHUD() {
     controller.targetBlock
       ? `<span class="hud-label">Target</span> ${blockName(voxelWorld.getBlock(controller.targetBlock.x, controller.targetBlock.y, controller.targetBlock.z))}`
       : '',
+    myInventory.length > 0 ? `<span class="hud-label">Items</span> ${myInventory.length}/12 [I]` : '',
     controller.flying ? `<span class="hud-label">Mode</span> Flying` : '',
     playerDead ? '<span style="color:#f44;font-weight:bold">DEAD — Respawning...</span>' : '',
   ].filter(Boolean).join('<br>');
@@ -422,6 +465,98 @@ function getDayPhaseIcon(t) {
   if (t < 0.8) return '\u263D';
   return '\u2600';
 }
+
+// ── Item Pickup & Inventory ──────────────────────────────────
+function pickUpNearestItem() {
+  if (!itemRenderer || !connection?.connected) return;
+  const pos = controller.position;
+  let nearest = null;
+  let nearDist = Infinity;
+
+  for (const [id, item] of itemRenderer.worldItems) {
+    const dx = item.group.position.x - pos.x;
+    const dz = item.group.position.z - pos.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < nearDist && dist < 5) {
+      nearDist = dist;
+      nearest = id;
+    }
+  }
+
+  if (nearest) {
+    connection.sendPickUpItem(nearest);
+  }
+}
+
+let inventoryOpen = false;
+function toggleInventoryPanel() {
+  inventoryOpen = !inventoryOpen;
+  let panel = document.getElementById('inventory-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'inventory-panel';
+    panel.style.cssText = 'position:fixed;right:20px;top:50%;transform:translateY(-50%);width:260px;background:rgba(10,10,30,0.85);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:16px;color:#fff;font-family:monospace;font-size:12px;z-index:200;display:none;max-height:70vh;overflow-y:auto';
+    document.body.appendChild(panel);
+  }
+
+  if (inventoryOpen) {
+    renderInventoryPanel(panel);
+    panel.style.display = 'block';
+  } else {
+    panel.style.display = 'none';
+  }
+}
+
+function renderInventoryPanel(panel) {
+  let html = '<div style="font-size:14px;font-weight:bold;margin-bottom:10px">Inventory [I]</div>';
+
+  // Equipment
+  const slots = ['head', 'body', 'legs', 'feet', 'mainHand', 'offHand'];
+  const slotLabels = { head: 'Head', body: 'Body', legs: 'Legs', feet: 'Feet', mainHand: 'Weapon', offHand: 'Shield' };
+  html += '<div style="margin-bottom:8px;color:#aaa">Equipment:</div>';
+  for (const slot of slots) {
+    const item = myEquipment[slot];
+    const label = slotLabels[slot] || slot;
+    if (item) {
+      const col = _rarityColor(item.rarity);
+      html += `<div style="padding:2px 4px;margin:2px 0;display:flex;justify-content:space-between;align-items:center"><span style="color:${col}">${label}: ${item.name}</span><button onclick="window._unequipSlot('${slot}')" style="background:rgba(255,100,100,0.3);border:1px solid rgba(255,100,100,0.4);color:#faa;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:10px">X</button></div>`;
+    } else {
+      html += `<div style="padding:2px 4px;margin:2px 0;color:#555">${label}: -</div>`;
+    }
+  }
+
+  // Backpack
+  html += '<div style="margin:10px 0 8px;color:#aaa">Backpack:</div>';
+  if (myInventory.length === 0) {
+    html += '<div style="color:#555;padding:2px 4px">Empty</div>';
+  }
+  for (let i = 0; i < myInventory.length; i++) {
+    const item = myInventory[i];
+    const col = _rarityColor(item.rarity);
+    html += `<div style="padding:2px 4px;margin:2px 0;display:flex;justify-content:space-between;align-items:center"><span style="color:${col}">[${i}] ${item.name} <span style="color:#888;font-size:10px">${item.category}</span></span><span>`;
+    html += `<button onclick="window._equipSlot(${i})" style="background:rgba(100,200,255,0.2);border:1px solid rgba(100,200,255,0.3);color:#8df;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:10px;margin-right:3px">Equip</button>`;
+    html += `<button onclick="window._dropSlot(${i})" style="background:rgba(255,100,100,0.2);border:1px solid rgba(255,100,100,0.3);color:#faa;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:10px">Drop</button>`;
+    html += '</span></div>';
+  }
+
+  panel.innerHTML = html;
+}
+
+function _rarityColor(rarity) {
+  const colors = ['#aaa', '#5f5', '#55f', '#a5f', '#fa0'];
+  return colors[rarity] ?? '#aaa';
+}
+
+// Global handlers for inventory buttons
+window._equipSlot = (idx) => {
+  if (connection?.connected) connection.sendEquipItem(idx);
+};
+window._unequipSlot = (slot) => {
+  if (connection?.connected) connection.sendUnequipItem(slot);
+};
+window._dropSlot = (idx) => {
+  if (connection?.connected) connection.sendDropItem(idx);
+};
 
 // ── Minimap ─────────────────────────────────────────────────
 function updateMinimap() {
@@ -497,6 +632,21 @@ function updateMinimap() {
     ctx.beginPath();
     ctx.arc(sx, sy, 3, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  // Draw items on minimap
+  if (itemRenderer) {
+    for (const [, item] of itemRenderer.worldItems) {
+      const dx = item.group.position.x - px;
+      const dz = item.group.position.z - pz;
+      if (Math.abs(dx) > radius || Math.abs(dz) > radius) continue;
+
+      const rarityColors = ['#aaa', '#5f5', '#55f', '#a5f', '#fa0'];
+      ctx.fillStyle = rarityColors[item.def?.rarity ?? 0];
+      const sx = (dx + radius) * scale;
+      const sy = (dz + radius) * scale;
+      ctx.fillRect(sx - 1, sy - 1, 2, 2);
+    }
   }
 
   // Draw self (center)
@@ -578,6 +728,18 @@ document.addEventListener('keydown', (e) => {
     if (flyIndicator) {
       flyIndicator.classList.toggle('active', isFlying);
     }
+    return;
+  }
+
+  if (e.code === 'KeyE' && !chatOpen && controller.locked) {
+    e.preventDefault();
+    pickUpNearestItem();
+    return;
+  }
+
+  if (e.code === 'KeyI' && !chatOpen && controller.locked) {
+    e.preventDefault();
+    toggleInventoryPanel();
     return;
   }
 
