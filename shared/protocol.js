@@ -5,10 +5,13 @@
 
 // ── Client → Server ───────────────────────────────────────────
 export const C2S = {
-  AUTH_HELLO:   'Auth/Hello',
-  WORLD_JOIN:   'World/Join',
-  WORLD_ACTION: 'World/Action',
-  WORLD_CHAT:   'World/Chat',
+  AUTH_HELLO:       'Auth/Hello',
+  WORLD_JOIN:       'World/Join',
+  WORLD_ACTION:     'World/Action',
+  WORLD_CHAT:       'World/Chat',
+  WORLD_SUBSCRIBE:  'World/Subscribe',
+  PERCEPT_QUERY:    'Percept/Query',
+  WORLD_RAYCAST:    'World/Raycast',
 };
 
 // ── Server → Client ───────────────────────────────────────────
@@ -37,6 +40,9 @@ export const S2C = {
   EQUIP_UPDATE:    'Equip/Update',
   TRADE_REQUEST:   'Trade/Request',
   TRADE_COMPLETE:  'Trade/Complete',
+  PLAYER_STATE:    'Player/State',
+  PERCEPT_RESULT:  'Percept/Result',
+  RAYCAST_RESULT:  'World/RaycastResult',
 };
 
 // ── Action kinds (World/Action.kind) ──────────────────────────
@@ -54,6 +60,7 @@ export const ACTION = {
   EQUIP_ITEM: 'EquipItem',
   UNEQUIP_ITEM:'UnequipItem',
   TRADE_OFFER:'TradeOffer',
+  PERCEIVE:   'Perceive',
 };
 
 // ── Chat channels ─────────────────────────────────────────────
@@ -76,6 +83,8 @@ export const ERROR = {
 };
 
 // ── World constants ───────────────────────────────────────────
+export const PROTOCOL_VERSION = 0;
+export const SERVER_BUILD     = '0.3.0';
 export const CHUNK_SIZE   = 16;
 export const CHUNK_HEIGHT = 64;
 export const SEA_LEVEL    = 18;

@@ -47,13 +47,22 @@ export class BotCraftAgent {
     this.accountId = null;
     this.profile = null;
     this.position = { x: 0, y: 0, z: 0 };
+    this.rotation = { x: 0, y: 0, z: 0, w: 1 };
     this.worldTime = 0;
     this.dayLength = 24000;
     this.hp = 20;
     this.maxHp = 20;
     this.dead = false;
 
+    /** Server capabilities (populated on Auth/Ok). */
+    this.capabilities = null;
+    /** Item registry mapping (populated on Auth/Ok for agents). */
+    this.itemRegistry = null;
+    /** Hotbar with block names resolved (populated on Auth/Ok). */
+    this.hotbarResolved = null;
+
     this._handlers = new Map();
+    this._rawHandlers = []; // for request/response patterns (percept, raycast)
     this._pendingActions = new Map(); // actionId -> { resolve, reject }
     this._joinResolve = null;
   }
@@ -112,18 +121,15 @@ export class BotCraftAgent {
   // ── Actions ─────────────────────────────────────────────
 
   /**
-   * Move to a position.
+   * Move to a position. Returns ActionResult so bots can confirm movement.
    * @param {number} x
    * @param {number} y
    * @param {number} z
+   * @returns {Promise<{ok: boolean, error?: object}>}
    */
-  async moveTo(x, y, z) {
+  moveTo(x, y, z) {
     this.position = { x, y, z };
-    this._send('World/Action', {
-      actionId: String(++_seq),
-      kind: 'MoveTo',
-      args: { pos: { x, y, z } },
-    });
+    return this._action('MoveTo', { pos: { x, y, z } });
   }
 
   /**
@@ -192,7 +198,7 @@ export class BotCraftAgent {
   }
 
   /**
-   * Perceive the world around the agent.
+   * Perceive the world around the agent (via action — includes raw blocks).
    * Returns nearby blocks, players, biome, and time of day.
    * @param {number} [radius=8] — Perception radius (max 16)
    * @returns {Promise<object>}
@@ -204,6 +210,54 @@ export class BotCraftAgent {
       this.worldTime = result.effects.worldTime ?? this.worldTime;
     }
     return result.effects ?? {};
+  }
+
+  /**
+   * Lightweight semantic perception (no raw chunk data).
+   * Returns block summary (counts), nearby entities, items, biome.
+   * @param {number} [radius=8]
+   * @returns {Promise<object>}
+   */
+  queryPercept(radius = 8) {
+    return new Promise((resolve) => {
+      const id = String(++_seq);
+      const handler = (msg) => {
+        if (msg.type === 'Percept/Result' && msg.payload?.id === id) {
+          this._removeRawHandler(handler);
+          resolve(msg.payload);
+        }
+      };
+      this._addRawHandler(handler);
+      this._send('Percept/Query', { id, radius });
+      setTimeout(() => { this._removeRawHandler(handler); resolve(null); }, 10_000);
+    });
+  }
+
+  /**
+   * Raycast — find what block the agent is facing.
+   * @returns {Promise<{hit: {x,y,z,blockId,name}|null, placePos: {x,y,z}|null}>}
+   */
+  raycast() {
+    return new Promise((resolve) => {
+      const id = String(++_seq);
+      const handler = (msg) => {
+        if (msg.type === 'World/RaycastResult' && msg.payload?.id === id) {
+          this._removeRawHandler(handler);
+          resolve(msg.payload);
+        }
+      };
+      this._addRawHandler(handler);
+      this._send('World/Raycast', { id });
+      setTimeout(() => { this._removeRawHandler(handler); resolve({ hit: null, placePos: null }); }, 10_000);
+    });
+  }
+
+  /**
+   * Configure which streams the server sends.
+   * @param {Object} streams — e.g. { chunks: false, mobs: true, blocks: true }
+   */
+  subscribe(streams) {
+    this._send('World/Subscribe', { streams });
   }
 
   // ── Events ──────────────────────────────────────────────
@@ -225,6 +279,9 @@ export class BotCraftAgent {
   }
 
   // ── Internal ────────────────────────────────────────────
+
+  _addRawHandler(fn) { this._rawHandlers.push(fn); }
+  _removeRawHandler(fn) { this._rawHandlers = this._rawHandlers.filter(h => h !== fn); }
 
   _send(type, payload) {
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -248,12 +305,22 @@ export class BotCraftAgent {
   }
 
   _handleMessage(msg, connectResolve, connectReject) {
+    // Forward to raw handlers (for request/response patterns)
+    for (const fn of this._rawHandlers) {
+      try { fn(msg); } catch { /* ignore */ }
+    }
+
     switch (msg.type) {
       case 'Auth/Ok':
         this.accountId = msg.payload.accountId;
         this.profile = msg.payload.profile;
         this.worldTime = msg.payload.worldTime ?? 0;
         this.dayLength = msg.payload.dayLength ?? 24000;
+        this.capabilities = msg.payload.capabilities ?? null;
+        this.itemRegistry = msg.payload.itemRegistry ?? null;
+        this.hotbarResolved = msg.payload.hotbarResolved ?? null;
+        // Disable chunk spam for bots by default
+        this._send('World/Subscribe', { streams: { chunks: false } });
         // Join the world
         this._send('World/Join', { spaceId: 'moltworld' });
         break;
@@ -346,6 +413,33 @@ export class BotCraftAgent {
           this.position = msg.payload.pos;
         }
         this._emit('playerRespawn', msg.payload);
+        break;
+
+      case 'Player/State':
+        if (msg.payload.accountId === this.accountId) {
+          this.position = msg.payload.pos ?? this.position;
+          this.rotation = msg.payload.rot ?? this.rotation;
+          this.hp = msg.payload.hp ?? this.hp;
+          this.maxHp = msg.payload.maxHp ?? this.maxHp;
+          this.dead = msg.payload.dead ?? this.dead;
+        }
+        this._emit('playerState', msg.payload);
+        break;
+
+      case 'Inventory/Update':
+        this._emit('inventoryUpdate', msg.payload);
+        break;
+
+      case 'Equip/Update':
+        this._emit('equipUpdate', msg.payload);
+        break;
+
+      case 'Item/Spawn':
+        this._emit('itemSpawn', msg.payload);
+        break;
+
+      case 'Item/Despawn':
+        this._emit('itemDespawn', msg.payload);
         break;
     }
   }

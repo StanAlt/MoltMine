@@ -13,12 +13,14 @@ import { MobManager } from './mob-manager.js';
 import { ItemManager } from './item-manager.js';
 import {
   C2S, S2C, ACTION, CHANNEL, ERROR,
+  PROTOCOL_VERSION, SERVER_BUILD,
   CHUNK_SIZE, CHUNK_HEIGHT, SEA_LEVEL, WORLD_SEED,
   TICK_RATE, RENDER_DISTANCE, envelope, parse,
 } from '../../shared/protocol.js';
 import {
   AIR, BLOCKS, isSolid, isMineable, isPlaceable, DEFAULT_HOTBAR,
 } from '../../shared/blocks.js';
+import { ITEMS, getItem, RARITY_NAMES, CATEGORY, SLOT } from '../../shared/items.js';
 import { BIOME_DATA, selectBiome } from '../../shared/biomes.js';
 import { PerlinNoise } from '../../shared/noise.js';
 
@@ -118,15 +120,24 @@ export class GameServer {
   handleHttpRequest(req, res) {
     // GET /api/status — world info for bots and dashboards
     if (req.method === 'GET' && req.url === '/api/status') {
+      const playerList = [];
+      for (const [, s] of this.sessions) {
+        playerList.push({ name: s.name, isAgent: s.isAgent });
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
       return res.end(JSON.stringify({
         name: 'BotCraft',
-        version: '0.2.0',
+        version: SERVER_BUILD,
+        protocolVersion: PROTOCOL_VERSION,
         players: this.sessions.size,
+        playerList,
+        mobs: this.mobs.mobs.size,
         worldTime: this._worldTime,
         dayLength: DAY_LENGTH_TICKS,
+        dayPhase: this._getDayPhase(),
         tick: this._tick,
         uptime: process.uptime(),
+        wsUrl: 'wss://botcraft.app/ws',
       }));
     }
 
@@ -141,24 +152,35 @@ export class GameServer {
             res.writeHead(400, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'name is required' }));
           }
-          // Return connection instructions
-          const wsUrl = `ws://${req.headers.host || 'localhost:3000'}`;
+          // Determine the correct WebSocket URL from the incoming request
+          const host = req.headers.host || 'localhost:3000';
+          const isSecure = req.headers['x-forwarded-proto'] === 'https' || host.includes('botcraft.app');
+          const wsUrl = `${isSecure ? 'wss' : 'ws'}://${host}/ws`;
+
           res.writeHead(200, {
             'content-type': 'application/json',
             'access-control-allow-origin': '*',
           });
           res.end(JSON.stringify({
             wsUrl,
+            protocolVersion: PROTOCOL_VERSION,
+            serverBuild: SERVER_BUILD,
             instructions: {
               step1: `Connect via WebSocket to ${wsUrl}`,
-              step2: 'Send Auth/Hello: { v:0, type:"Auth/Hello", id:"1", ts:0, payload:{ name, agent:true } }',
+              step2: 'Send Auth/Hello: { v:0, type:"Auth/Hello", id:"1", ts:0, payload:{ name:"YourBot", agent:true } }',
               step3: 'Send World/Join: { v:0, type:"World/Join", id:"2", ts:0, payload:{ spaceId:"moltworld" } }',
-              step4: 'You are in! Send World/Action and World/Chat messages.',
+              step4: 'You will receive Auth/Ok (with capabilities) then World/Snapshot.',
+              step5: 'Send World/Action messages. Every action returns World/ActionResult.',
+              step6: 'Use World/Subscribe to choose which streams you receive.',
             },
             example: {
               auth: { v: 0, type: 'Auth/Hello', id: '1', ts: 0, payload: { name, agent: true, personality: { traits, primaryColor, motto } } },
               join: { v: 0, type: 'World/Join', id: '2', ts: 0, payload: { spaceId: 'moltworld' } },
-              chat: { v: 0, type: 'World/Chat', id: '3', ts: 0, payload: { text: 'Hello world!', channel: 'global' } },
+              move: { v: 0, type: 'World/Action', id: '3', ts: 0, payload: { actionId: '3', kind: 'MoveTo', args: { pos: { x: 10, y: 30, z: 10 } } } },
+              mine: { v: 0, type: 'World/Action', id: '4', ts: 0, payload: { actionId: '4', kind: 'Mine', args: { pos: { x: 5, y: 25, z: 5 } } } },
+              chat: { v: 0, type: 'World/Chat', id: '5', ts: 0, payload: { text: 'Hello world!', channel: 'global' } },
+              perceive: { v: 0, type: 'World/Action', id: '6', ts: 0, payload: { actionId: '6', kind: 'Perceive', args: { radius: 8 } } },
+              subscribe: { v: 0, type: 'World/Subscribe', id: '7', ts: 0, payload: { streams: { chunks: false, mobs: true, items: true, chat: true, blocks: true, players: true } } },
             },
           }));
         } catch {
@@ -209,10 +231,13 @@ export class GameServer {
 
   _handleMessage(ws, msg) {
     switch (msg.type) {
-      case C2S.AUTH_HELLO:   return this._onAuthHello(ws, msg.payload);
-      case C2S.WORLD_JOIN:   return this._onWorldJoin(ws, msg.payload);
-      case C2S.WORLD_ACTION: return this._onWorldAction(ws, msg);
-      case C2S.WORLD_CHAT:   return this._onWorldChat(ws, msg.payload);
+      case C2S.AUTH_HELLO:      return this._onAuthHello(ws, msg.payload);
+      case C2S.WORLD_JOIN:      return this._onWorldJoin(ws, msg.payload);
+      case C2S.WORLD_ACTION:    return this._onWorldAction(ws, msg);
+      case C2S.WORLD_CHAT:      return this._onWorldChat(ws, msg.payload);
+      case C2S.WORLD_SUBSCRIBE: return this._onWorldSubscribe(ws, msg.payload);
+      case C2S.PERCEPT_QUERY:   return this._onPerceptQuery(ws, msg);
+      case C2S.WORLD_RAYCAST:   return this._onWorldRaycast(ws, msg);
     }
   }
 
@@ -249,17 +274,68 @@ export class GameServer {
       _sentChunks: new Set(),
       _lastCX: null,
       _lastCZ: null,
+      // Subscription streams — agents can toggle these
+      _streams: {
+        chunks: !isAgent,  // off by default for bots
+        mobs: true,
+        items: true,
+        chat: true,
+        blocks: true,
+        players: true,
+      },
     };
 
     this.sessions.set(ws, session);
     this.accounts.set(accountId, session);
 
+    // Build hotbar resolved (name + info for each slot)
+    const hotbarResolved = session.hotbar.map(id => {
+      const b = BLOCKS.get(id);
+      return b ? { id: b.id, name: b.name, color: b.color, placeable: !!(b.flags & 0x20) } : null;
+    });
+
+    // Build item registry summary for bots
+    const itemRegistry = [...ITEMS.values()].map(it => ({
+      id: it.id, name: it.name, category: it.category,
+      rarity: it.rarity, slot: it.slot, color: it.color,
+    }));
+
+    // Capabilities handshake
+    const capabilities = {
+      protocolVersion: PROTOCOL_VERSION,
+      serverBuild: SERVER_BUILD,
+      actions: [
+        { kind: 'MoveTo',      args: { pos: '{x,y,z}', rot: '{x,y,z,w}?' },        desc: 'Move to position' },
+        { kind: 'Mine',        args: { pos: '{x,y,z}' },                            desc: 'Mine block at position' },
+        { kind: 'Place',       args: { pos: '{x,y,z}', blockId: 'number' },         desc: 'Place block' },
+        { kind: 'Emote',       args: { name: 'string' },                            desc: 'Play emote (wave, dance, think)' },
+        { kind: 'AttackMob',   args: { mobId: 'string' },                           desc: 'Attack a mob' },
+        { kind: 'PickUpItem',  args: { worldItemId: 'string' },                     desc: 'Pick up world item' },
+        { kind: 'DropItem',    args: { inventoryIndex: 'number' },                  desc: 'Drop inventory item' },
+        { kind: 'EquipItem',   args: { inventoryIndex: 'number' },                  desc: 'Equip inventory item' },
+        { kind: 'UnequipItem', args: { slot: 'head|body|legs|feet|mainHand|offHand' }, desc: 'Unequip slot' },
+        { kind: 'TradeOffer',  args: { toName: 'string', inventoryIndex: 'number' }, desc: 'Trade item to player' },
+        { kind: 'Perceive',    args: { radius: 'number? (max 16, default 8)' },     desc: 'Perceive surroundings' },
+      ],
+      channels: Object.values(CHANNEL),
+      rateLimit: { actionsPerSecond: 20, chatPerSecond: 2 },
+      subscriptionStreams: ['chunks', 'mobs', 'items', 'chat', 'blocks', 'players'],
+      messageTypes: {
+        perceptQuery: 'Percept/Query — lightweight semantic perception without raw chunks',
+        worldRaycast: 'World/Raycast — find block the agent is facing',
+        worldSubscribe: 'World/Subscribe — toggle which streams are sent',
+      },
+    };
+
     this._send(ws, S2C.AUTH_OK, {
       accountId,
       profile,
       hotbar: session.hotbar,
+      hotbarResolved,
       worldTime: this._worldTime,
       dayLength: DAY_LENGTH_TICKS,
+      capabilities,
+      itemRegistry: isAgent ? itemRegistry : undefined, // only send to bots to save bandwidth
     });
 
     this._audit('auth', accountId, { name, agent: isAgent });
@@ -358,7 +434,7 @@ export class GameServer {
       case ACTION.EQUIP_ITEM:   return this._actionEquipItem(ws, session, actionId, args);
       case ACTION.UNEQUIP_ITEM: return this._actionUnequipItem(ws, session, actionId, args);
       case ACTION.TRADE_OFFER:  return this._actionTradeOffer(ws, session, actionId, args);
-      case 'Perceive':          return this._actionPerceive(ws, session, actionId, args);
+      case ACTION.PERCEIVE:     return this._actionPerceive(ws, session, actionId, args);
       default:
         this._send(ws, S2C.WORLD_ACTION_RESULT, {
           actionId, ok: false,
@@ -368,9 +444,19 @@ export class GameServer {
   }
 
   _actionMove(ws, session, actionId, args) {
-    if (!args?.pos) return;
+    if (!args?.pos) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'pos {x,y,z} required' },
+      });
+    }
     const { x, y, z } = args.pos;
-    if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return;
+    if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'pos must have numeric x, y, z' },
+      });
+    }
 
     session.pos = { x, y, z };
     if (args.rot) session.rot = args.rot;
@@ -381,25 +467,43 @@ export class GameServer {
     if (session._lastCX !== newCX || session._lastCZ !== newCZ) {
       session._lastCX = newCX;
       session._lastCZ = newCZ;
-      for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
-        for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-          const cx = newCX + dx;
-          const cz = newCZ + dz;
-          const key = chunkKey(cx, cz);
-          if (!session._sentChunks.has(key)) {
-            session._sentChunks.add(key);
-            this._sendChunk(ws, cx, cz);
+      if (session._streams.chunks) {
+        for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
+          for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
+            const cx = newCX + dx;
+            const cz = newCZ + dz;
+            const key = chunkKey(cx, cz);
+            if (!session._sentChunks.has(key)) {
+              session._sentChunks.add(key);
+              this._sendChunk(ws, cx, cz);
+            }
           }
         }
       }
     }
 
-    // Broadcast to others
-    this._broadcast(S2C.PLAYER_MOVE, {
+    // Broadcast to others (respecting their subscription)
+    this._broadcastFiltered(S2C.PLAYER_MOVE, {
       accountId: session.accountId,
       pos: session.pos,
       rot: session.rot,
-    }, ws);
+    }, ws, 'players');
+
+    // Send ActionResult + Player/State back to the mover
+    if (actionId) {
+      this._send(ws, S2C.WORLD_ACTION_RESULT, { actionId, ok: true });
+    }
+    // Always send Player/State for bots (they need pos confirmation)
+    if (session.isAgent) {
+      this._send(ws, S2C.PLAYER_STATE, {
+        accountId: session.accountId,
+        pos: session.pos,
+        rot: session.rot,
+        hp: session.hp,
+        maxHp: session.maxHp,
+        selectedSlot: session.selectedSlot,
+      });
+    }
   }
 
   _actionMine(ws, session, actionId, args) {
@@ -420,10 +524,16 @@ export class GameServer {
     // Track stats
     session.profile.stats.blocksMined = (session.profile.stats.blocksMined || 0) + 1;
 
-    this._broadcastAll(S2C.BLOCK_UPDATE, { pos: { x, y, z }, block: AIR });
+    // BlockUpdate includes oldId→newId and who did it, for bot feedback
+    this._broadcastAllFiltered(S2C.BLOCK_UPDATE, {
+      pos: { x, y, z },
+      block: AIR,
+      oldBlock: block,
+      byAccountId: session.accountId,
+    }, 'blocks');
     this._send(ws, S2C.WORLD_ACTION_RESULT, {
       actionId, ok: true,
-      effects: { mined: block, drop },
+      effects: { mined: block, drop, pos: { x, y, z } },
     });
     this._audit('mine', session.accountId, { pos: { x, y, z }, block });
   }
@@ -453,8 +563,16 @@ export class GameServer {
     // Track stats
     session.profile.stats.blocksPlaced = (session.profile.stats.blocksPlaced || 0) + 1;
 
-    this._broadcastAll(S2C.BLOCK_UPDATE, { pos: { x, y, z }, block: blockId });
-    this._send(ws, S2C.WORLD_ACTION_RESULT, { actionId, ok: true });
+    this._broadcastAllFiltered(S2C.BLOCK_UPDATE, {
+      pos: { x, y, z },
+      block: blockId,
+      oldBlock: existing,
+      byAccountId: session.accountId,
+    }, 'blocks');
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: true,
+      effects: { placed: blockId, pos: { x, y, z } },
+    });
     this._audit('place', session.accountId, { pos: { x, y, z }, block: blockId });
   }
 
@@ -874,6 +992,138 @@ export class GameServer {
     return profile;
   }
 
+  // ── World/Subscribe ────────────────────────────────────────
+  _onWorldSubscribe(ws, payload) {
+    const session = this.sessions.get(ws);
+    if (!session) return;
+    const { streams } = payload ?? {};
+    if (!streams || typeof streams !== 'object') return;
+    // Merge provided keys into session streams (only known keys)
+    for (const key of ['chunks', 'mobs', 'items', 'chat', 'blocks', 'players']) {
+      if (key in streams) {
+        session._streams[key] = !!streams[key];
+      }
+    }
+  }
+
+  // ── Percept/Query — lightweight semantic perception ────────
+  _onPerceptQuery(ws, msg) {
+    const session = this.sessions.get(ws);
+    if (!session) return;
+
+    const id = msg.id || msg.payload?.id;
+    const args = msg.payload ?? {};
+    const { x, y, z } = session.pos;
+    const radius = Math.min(args.radius ?? 8, 16);
+    const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+
+    // Summarized block info: counts by type within radius (no raw data)
+    const blockCounts = {};
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dz = -radius; dz <= radius; dz++) {
+          const block = this._getBlock(bx + dx, by + dy, bz + dz);
+          if (block !== AIR) {
+            const name = BLOCKS.get(block)?.name ?? 'Unknown';
+            blockCounts[name] = (blockCounts[name] || 0) + 1;
+          }
+        }
+      }
+    }
+
+    // Nearby entities (players + mobs)
+    const nearbyPlayers = [];
+    for (const [, other] of this.sessions) {
+      if (other.accountId === session.accountId) continue;
+      const dist = Math.sqrt((other.pos.x - x) ** 2 + (other.pos.y - y) ** 2 + (other.pos.z - z) ** 2);
+      if (dist <= 64) {
+        nearbyPlayers.push({
+          name: other.name, pos: other.pos,
+          distance: Math.round(dist), isAgent: other.isAgent,
+        });
+      }
+    }
+
+    const nearbyMobs = [];
+    for (const [, mob] of this.mobs.mobs) {
+      const mdist = Math.sqrt((mob.pos.x - x) ** 2 + (mob.pos.z - z) ** 2);
+      if (mdist <= 32) {
+        nearbyMobs.push({
+          id: mob.id, type: mob.type, pos: mob.pos,
+          hp: mob.hp, maxHp: mob.maxHp, distance: Math.round(mdist),
+        });
+      }
+    }
+
+    const nearbyItems = this.items.getNearbyItems(session.pos, 32);
+
+    // Biome
+    const biomeT = new PerlinNoise(WORLD_SEED + 1000);
+    const biomeM = new PerlinNoise(WORLD_SEED + 2000);
+    const biomeId = selectBiome(biomeT.fbm(bx / 256, bz / 256, 3), biomeM.fbm(bx / 256, bz / 256, 3));
+    const biome = BIOME_DATA[biomeId];
+
+    this._send(ws, S2C.PERCEPT_RESULT, {
+      id,
+      position: session.pos,
+      hp: session.hp, maxHp: session.maxHp,
+      biome: biome?.name ?? 'Unknown',
+      worldTime: this._worldTime,
+      dayPhase: this._getDayPhase(),
+      blockSummary: blockCounts,
+      nearbyPlayers,
+      nearbyMobs,
+      nearbyItems,
+      inventory: this.items.getInventoryForPerception(session.accountId),
+      equipment: this.items.getEquipmentForPerception(session.accountId),
+    });
+  }
+
+  // ── World/Raycast — find block the agent is facing ─────────
+  _onWorldRaycast(ws, msg) {
+    const session = this.sessions.get(ws);
+    if (!session) return;
+
+    const id = msg.id || msg.payload?.id;
+    const { x, y, z } = session.pos;
+    const rot = session.rot || { x: 0, y: 0, z: 0, w: 1 };
+
+    // Reconstruct forward direction from yaw/pitch (euler y, x)
+    const yaw = rot.y ?? 0;
+    const pitch = rot.x ?? 0;
+    const dirX = -Math.sin(yaw) * Math.cos(pitch);
+    const dirY = Math.sin(pitch);
+    const dirZ = -Math.cos(yaw) * Math.cos(pitch);
+
+    // Step along ray
+    const reach = 6;
+    const step = 0.1;
+    let prevX = -999, prevY = -999, prevZ = -999;
+    let hitBlock = null, hitPos = null, placePos = null;
+
+    for (let d = 0; d < reach; d += step) {
+      const px = x + dirX * d;
+      const py = y + dirY * d;
+      const pz = z + dirZ * d;
+      const bx2 = Math.floor(px), by2 = Math.floor(py), bz2 = Math.floor(pz);
+      if (bx2 === prevX && by2 === prevY && bz2 === prevZ) continue;
+
+      const blockId = this._getBlock(bx2, by2, bz2);
+      if (isSolid(blockId)) {
+        hitBlock = { x: bx2, y: by2, z: bz2, blockId, name: BLOCKS.get(blockId)?.name };
+        placePos = { x: prevX, y: prevY, z: prevZ };
+        break;
+      }
+      prevX = bx2; prevY = by2; prevZ = bz2;
+    }
+
+    this._send(ws, S2C.RAYCAST_RESULT, {
+      id,
+      hit: hitBlock,
+      placePos,
+    });
+  }
+
   // ── Game tick ─────────────────────────────────────────────
   _gameTick() {
     this._tick++;
@@ -894,6 +1144,24 @@ export class GameServer {
     // Update items every 4 ticks
     if (this._tick % 4 === 0) {
       this.items.update(this._tick);
+    }
+
+    // Send Player/State to agents every 10 ticks (2x/sec)
+    if (this._tick % 10 === 0) {
+      for (const [ws, session] of this.sessions) {
+        if (session.isAgent && ws.readyState === ws.OPEN) {
+          this._send(ws, S2C.PLAYER_STATE, {
+            accountId: session.accountId,
+            pos: session.pos,
+            rot: session.rot,
+            hp: session.hp,
+            maxHp: session.maxHp,
+            dead: session.dead,
+            selectedSlot: session.selectedSlot,
+            tick: this._tick,
+          });
+        }
+      }
     }
 
     // Broadcast time every 2 seconds (40 ticks)
@@ -927,6 +1195,26 @@ export class GameServer {
     const msg = envelope(type, payload);
     for (const [ws] of this.sessions) {
       if (ws.readyState === ws.OPEN) {
+        ws.send(msg);
+      }
+    }
+  }
+
+  /** Broadcast to everyone except exclude, only to sessions subscribed to stream. */
+  _broadcastFiltered(type, payload, exclude, stream) {
+    const msg = envelope(type, payload);
+    for (const [ws, session] of this.sessions) {
+      if (ws !== exclude && ws.readyState === ws.OPEN && session._streams[stream]) {
+        ws.send(msg);
+      }
+    }
+  }
+
+  /** Broadcast to all sessions subscribed to stream (including sender). */
+  _broadcastAllFiltered(type, payload, stream) {
+    const msg = envelope(type, payload);
+    for (const [ws, session] of this.sessions) {
+      if (ws.readyState === ws.OPEN && session._streams[stream]) {
         ws.send(msg);
       }
     }

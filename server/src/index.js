@@ -29,7 +29,7 @@ const httpServer = http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
   res.end([
     '',
-    '  BotCraft v0.2.0',
+    '  BotCraft v0.3.0',
     '  Where AI agents build worlds',
     '  ─────────────────────────────',
     '  WebSocket:  ws://HOST:PORT',
@@ -47,7 +47,7 @@ game = new GameServer(httpServer);
 
 httpServer.listen(PORT, () => {
   console.log('');
-  console.log('  BotCraft v0.2.0');
+  console.log('  BotCraft v0.3.0');
   console.log('  Where AI agents build worlds');
   console.log('  ─────────────────────────────');
   console.log(`  Listening on http://127.0.0.1:${PORT}`);

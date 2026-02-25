@@ -423,6 +423,17 @@ ${blockNames}
       console.log(`[MoltyMind] Player left: ${p.name}`);
     });
 
+    // Block changes (mine/place by others — helps bot verify its own actions)
+    this.agent.on('blockUpdate', (payload) => {
+      if (payload.byAccountId && payload.byAccountId !== this.agent.accountId) {
+        const blockName = BLOCK_ID_TO_NAME.get(payload.block) ?? 'unknown';
+        const oldName = BLOCK_ID_TO_NAME.get(payload.oldBlock) ?? 'air';
+        this.memory.addEvent('block_changed_nearby', {
+          pos: payload.pos, newBlock: blockName, oldBlock: oldName,
+        });
+      }
+    });
+
     // Day/night phase transitions
     this.agent.on('time', (t) => {
       const prevPhase = this._lastDayPhase;
