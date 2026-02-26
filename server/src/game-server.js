@@ -300,22 +300,83 @@ export class GameServer {
       rarity: it.rarity, slot: it.slot, color: it.color,
     }));
 
-    // Capabilities handshake
+    // Capabilities handshake — every action, its arg schema, and a concrete example
     const capabilities = {
       protocolVersion: PROTOCOL_VERSION,
       serverBuild: SERVER_BUILD,
       actions: [
-        { kind: 'MoveTo',      args: { pos: '{x,y,z}', rot: '{x,y,z,w}?' },        desc: 'Move to position' },
-        { kind: 'Mine',        args: { pos: '{x,y,z}' },                            desc: 'Mine block at position' },
-        { kind: 'Place',       args: { pos: '{x,y,z}', blockId: 'number' },         desc: 'Place block' },
-        { kind: 'Emote',       args: { name: 'string' },                            desc: 'Play emote (wave, dance, think)' },
-        { kind: 'AttackMob',   args: { mobId: 'string' },                           desc: 'Attack a mob' },
-        { kind: 'PickUpItem',  args: { worldItemId: 'string' },                     desc: 'Pick up world item' },
-        { kind: 'DropItem',    args: { inventoryIndex: 'number' },                  desc: 'Drop inventory item' },
-        { kind: 'EquipItem',   args: { inventoryIndex: 'number' },                  desc: 'Equip inventory item' },
-        { kind: 'UnequipItem', args: { slot: 'head|body|legs|feet|mainHand|offHand' }, desc: 'Unequip slot' },
-        { kind: 'TradeOffer',  args: { toName: 'string', inventoryIndex: 'number' }, desc: 'Trade item to player' },
-        { kind: 'Perceive',    args: { radius: 'number? (max 16, default 8)' },     desc: 'Perceive surroundings' },
+        {
+          kind: 'MoveTo',
+          args: { pos: '{x, y, z} (number)', rot: '{x, y, z, w}? (optional quaternion)' },
+          desc: 'Teleport to position. Returns ActionResult + Player/State.',
+          example: { kind: 'MoveTo', args: { pos: { x: 10, y: 30, z: 10 } } },
+        },
+        {
+          kind: 'Mine',
+          args: { pos: '{x, y, z} (integer, block coords)' },
+          desc: 'Mine block at position. Returns mined block ID + drop. Triggers Block/Update.',
+          example: { kind: 'Mine', args: { pos: { x: 5, y: 25, z: 5 } } },
+        },
+        {
+          kind: 'Place',
+          args: { pos: '{x, y, z} (integer)', blockId: 'number (block type ID from hotbarResolved or PLACEABLE_BLOCKS)' },
+          desc: 'Place block at position. Returns placed block ID. Triggers Block/Update.',
+          example: { kind: 'Place', args: { pos: { x: 6, y: 26, z: 5 }, blockId: 1 } },
+        },
+        {
+          kind: 'Speak',
+          args: { text: 'string (max 500 chars)', channel: 'string? (default "global")' },
+          desc: 'Send a chat message. Returns confirmed text + channel.',
+          example: { kind: 'Speak', args: { text: 'Hello world!', channel: 'global' } },
+        },
+        {
+          kind: 'Emote',
+          args: { name: 'string (e.g. "wave", "dance", "think")' },
+          desc: 'Play an emote animation visible to other players.',
+          example: { kind: 'Emote', args: { name: 'wave' } },
+        },
+        {
+          kind: 'AttackMob',
+          args: { mobId: 'string (mob UUID from Mob/Spawn or Perceive)' },
+          desc: 'Attack a mob. Returns damage dealt, killed status, mob type.',
+          example: { kind: 'AttackMob', args: { mobId: 'abc-123' } },
+        },
+        {
+          kind: 'PickUpItem',
+          args: { worldItemId: 'string (from Item/Spawn or Perceive)' },
+          desc: 'Pick up a world item. Adds to inventory.',
+          example: { kind: 'PickUpItem', args: { worldItemId: 'item-456' } },
+        },
+        {
+          kind: 'DropItem',
+          args: { inventoryIndex: 'number (0-based slot in inventory)' },
+          desc: 'Drop an inventory item into the world.',
+          example: { kind: 'DropItem', args: { inventoryIndex: 0 } },
+        },
+        {
+          kind: 'EquipItem',
+          args: { inventoryIndex: 'number (0-based slot in inventory)' },
+          desc: 'Equip an inventory item to its slot (weapon→mainHand, hat→head, etc).',
+          example: { kind: 'EquipItem', args: { inventoryIndex: 0 } },
+        },
+        {
+          kind: 'UnequipItem',
+          args: { slot: 'string: head | body | legs | feet | mainHand | offHand' },
+          desc: 'Unequip item from slot back to inventory.',
+          example: { kind: 'UnequipItem', args: { slot: 'mainHand' } },
+        },
+        {
+          kind: 'TradeOffer',
+          args: { toName: 'string (player name)', inventoryIndex: 'number' },
+          desc: 'Offer an item trade to another player.',
+          example: { kind: 'TradeOffer', args: { toName: 'Bob', inventoryIndex: 0 } },
+        },
+        {
+          kind: 'Perceive',
+          args: { radius: 'number? (1–16, default 8)' },
+          desc: 'Full perception: nearby blocks (raw), players, mobs, items, biome, inventory.',
+          example: { kind: 'Perceive', args: { radius: 8 } },
+        },
       ],
       channels: Object.values(CHANNEL),
       rateLimit: { actionsPerSecond: 20, chatPerSecond: 2 },
@@ -324,6 +385,11 @@ export class GameServer {
         perceptQuery: 'Percept/Query — lightweight semantic perception without raw chunks',
         worldRaycast: 'World/Raycast — find block the agent is facing',
         worldSubscribe: 'World/Subscribe — toggle which streams are sent',
+      },
+      notes: {
+        actionResult: 'Every World/Action ALWAYS returns World/ActionResult {actionId, ok, effects?, error?}',
+        blockUpdate: 'Mine/Place trigger Block/Update {pos, block, oldBlock, byAccountId, tick} to all subscribed clients',
+        playerState: 'Agents receive Player/State {pos, rot, hp, maxHp, dead} every 500ms',
       },
     };
 
@@ -427,7 +493,7 @@ export class GameServer {
       case ACTION.MINE:       return this._actionMine(ws, session, actionId, args);
       case ACTION.PLACE:      return this._actionPlace(ws, session, actionId, args);
       case ACTION.EMOTE:      return this._actionEmote(ws, session, actionId, args);
-      case ACTION.SPEAK:      return this._onWorldChat(ws, args);
+      case ACTION.SPEAK:      return this._actionSpeak(ws, session, actionId, args);
       case ACTION.ATTACK_MOB:   return this._actionAttackMob(ws, session, actionId, args);
       case ACTION.PICK_UP_ITEM: return this._actionPickUpItem(ws, session, actionId, args);
       case ACTION.DROP_ITEM:    return this._actionDropItem(ws, session, actionId, args);
@@ -507,7 +573,12 @@ export class GameServer {
   }
 
   _actionMine(ws, session, actionId, args) {
-    if (!args?.pos) return;
+    if (!args?.pos || typeof args.pos.x !== 'number' || typeof args.pos.y !== 'number' || typeof args.pos.z !== 'number') {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'Mine requires args.pos {x: number, y: number, z: number}' },
+      });
+    }
     const { x, y, z } = args.pos;
     const block = this._getBlock(x, y, z);
 
@@ -530,6 +601,7 @@ export class GameServer {
       block: AIR,
       oldBlock: block,
       byAccountId: session.accountId,
+      tick: this._tick,
     }, 'blocks');
     this._send(ws, S2C.WORLD_ACTION_RESULT, {
       actionId, ok: true,
@@ -539,7 +611,13 @@ export class GameServer {
   }
 
   _actionPlace(ws, session, actionId, args) {
-    if (!args?.pos || args?.blockId == null) return;
+    if (!args?.pos || typeof args.pos.x !== 'number' || typeof args.pos.y !== 'number' || typeof args.pos.z !== 'number' ||
+        typeof args.blockId !== 'number') {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'Place requires args.pos {x: number, y: number, z: number} and args.blockId (number)' },
+      });
+    }
     const { x, y, z } = args.pos;
     const blockId = args.blockId;
 
@@ -568,6 +646,7 @@ export class GameServer {
       block: blockId,
       oldBlock: existing,
       byAccountId: session.accountId,
+      tick: this._tick,
     }, 'blocks');
     this._send(ws, S2C.WORLD_ACTION_RESULT, {
       actionId, ok: true,
@@ -577,7 +656,12 @@ export class GameServer {
   }
 
   _actionEmote(ws, session, actionId, args) {
-    if (!args?.name) return;
+    if (!args?.name) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'Emote requires args.name (string, e.g. "wave", "dance", "think")' },
+      });
+    }
     this._broadcast(S2C.WORLD_EVENT, {
       kind: 'emote',
       accountId: session.accountId,
@@ -853,6 +937,21 @@ export class GameServer {
     if (t < DAY_LENGTH_TICKS * 0.55) return 'dusk';
     if (t < DAY_LENGTH_TICKS * 0.8) return 'night';
     return 'dawn';
+  }
+
+  _actionSpeak(ws, session, actionId, args) {
+    if (!args?.text || typeof args.text !== 'string') {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'Speak requires args.text (string). Optional: args.channel (default "global")' },
+      });
+    }
+    // Delegate to chat handler then confirm
+    this._onWorldChat(ws, args);
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: true,
+      effects: { text: args.text.slice(0, 500), channel: args.channel || CHANNEL.GLOBAL },
+    });
   }
 
   // ── Chat ──────────────────────────────────────────────────

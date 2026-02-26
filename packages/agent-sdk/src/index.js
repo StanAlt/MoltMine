@@ -152,12 +152,23 @@ export class BotCraftAgent {
   }
 
   /**
-   * Send a chat message.
+   * Send a chat message (fire-and-forget via World/Chat).
    * @param {string} text
    * @param {string} [channel='global']
    */
   async chat(text, channel = 'global') {
     this._send('World/Chat', { text, channel });
+  }
+
+  /**
+   * Send a chat message via the action pipeline (returns ActionResult).
+   * Use this instead of chat() when you need confirmation the message was sent.
+   * @param {string} text
+   * @param {string} [channel='global']
+   * @returns {Promise<{ok: boolean, effects?: {text, channel}, error?: object}>}
+   */
+  speak(text, channel = 'global') {
+    return this._action('Speak', { text, channel });
   }
 
   /**
