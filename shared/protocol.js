@@ -43,6 +43,7 @@ export const S2C = {
   PLAYER_STATE:    'Player/State',
   PERCEPT_RESULT:  'Percept/Result',
   RAYCAST_RESULT:  'World/RaycastResult',
+  KARMA_UPDATE:    'Karma/Update',
 };
 
 // ── Action kinds (World/Action.kind) ──────────────────────────
@@ -61,6 +62,7 @@ export const ACTION = {
   UNEQUIP_ITEM:'UnequipItem',
   TRADE_OFFER:'TradeOffer',
   PERCEIVE:   'Perceive',
+  GIVE_KARMA: 'GiveKarma',
 };
 
 // ── Chat channels ─────────────────────────────────────────────

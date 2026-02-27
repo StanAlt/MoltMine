@@ -130,8 +130,10 @@ export class PlayerController {
       const speed = (this.keys['ControlLeft'] || this.keys['ControlRight']) ? FLY_SPEED * 2.5 : FLY_SPEED;
       this.velocity.set(moveDir.x * speed, moveDir.y * speed, moveDir.z * speed);
 
-      // Move with collision (optional in fly — skip for now for freedom)
-      this.position.addScaledVector(this.velocity, dt);
+      // Fly mode uses collision — blocks stop the player
+      this._moveAxis('y', this.velocity.y * dt);
+      this._moveAxis('x', this.velocity.x * dt);
+      this._moveAxis('z', this.velocity.z * dt);
     } else {
       // ── Check water state ──
       const feetY = Math.floor(this.position.y - PLAYER_HEIGHT);

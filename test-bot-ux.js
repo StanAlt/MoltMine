@@ -98,6 +98,10 @@ async function main() {
   const speakAction = bot.capabilities?.actions?.find(a => a.kind === 'Speak');
   check('Capabilities includes Speak action', speakAction != null);
 
+  // Check GiveKarma action exists in capabilities
+  const karmaAction = bot.capabilities?.actions?.find(a => a.kind === 'GiveKarma');
+  check('Capabilities includes GiveKarma action', karmaAction != null);
+
   // ── 5. Item Registry ──
   console.log(`\n${INFO} Checking item registry...`);
   check('Has itemRegistry', Array.isArray(bot.itemRegistry), `${bot.itemRegistry?.length} items`);
@@ -340,7 +344,73 @@ async function main() {
     check('subscribe', false, e.message);
   }
 
-  // ── 17. HP & state ──
+  // ── 17. Karma system ──
+  console.log(`\n${INFO} Testing karma system...`);
+
+  // Connect a second bot to test karma giving
+  const bot2 = new BotCraftAgent({
+    name: 'KarmaHelper',
+    traits: ['friendly'],
+    primaryColor: '#00FF00',
+    motto: 'Here to help!',
+  });
+
+  try {
+    await bot2.connect('ws://localhost:3000');
+    check('Second bot connected', true, bot2.accountId);
+
+    // Bot1 gives karma to bot2
+    const karmaResult = await bot.giveKarma('KarmaHelper', 'great test partner');
+    check('giveKarma() returned ActionResult', karmaResult != null);
+    check('GiveKarma ok=true', karmaResult?.ok === true);
+    check('GiveKarma effects has to', karmaResult?.effects?.to === 'KarmaHelper');
+    check('GiveKarma effects has reason', karmaResult?.effects?.reason === 'great test partner');
+    check('GiveKarma effects has newKarma', typeof karmaResult?.effects?.newKarma === 'number', `karma: ${karmaResult?.effects?.newKarma}`);
+
+    // Self-karma should fail
+    const selfKarma = await bot.giveKarma('Victorio-Test', 'self-praise');
+    check('Self-karma rejected', selfKarma?.ok === false);
+    check('Self-karma error code', selfKarma?.error?.code === 'INVALID_ARGUMENT', selfKarma?.error?.message);
+
+    // Rate limit test: same pair within 60s should fail
+    const rateLimited = await bot.giveKarma('KarmaHelper', 'again');
+    check('Rate-limited karma rejected', rateLimited?.ok === false);
+    check('Rate limit error code', rateLimited?.error?.code === 'RATE_LIMITED', rateLimited?.error?.message);
+
+    // Bad args: no target name
+    const badKarma = await bot._action('GiveKarma', {});
+    check('GiveKarma(no target) ok=false', badKarma?.ok === false);
+    check('GiveKarma(no target) has error', badKarma?.error?.code === 'INVALID_ARGUMENT');
+
+    // Non-existent player
+    const noPlayer = await bot.giveKarma('GhostPlayer999', 'who?');
+    check('GiveKarma(unknown player) ok=false', noPlayer?.ok === false);
+    check('GiveKarma(unknown player) error', noPlayer?.error?.code === 'NOT_FOUND', noPlayer?.error?.message);
+
+    bot2.disconnect();
+  } catch (e) {
+    check('Karma system', false, e.message);
+    try { bot2.disconnect(); } catch {}
+  }
+
+  // ── 18. Karma REST API ──
+  console.log(`\n${INFO} Testing karma leaderboard API...`);
+  try {
+    const karmaRes = await fetch('http://localhost:3000/api/karma');
+    const karmaData = await karmaRes.json();
+    check('GET /api/karma returns 200', karmaRes.ok);
+    check('Karma has leaderboard array', Array.isArray(karmaData.leaderboard));
+    if (karmaData.leaderboard.length > 0) {
+      const entry = karmaData.leaderboard[0];
+      check('Leaderboard entry has name', typeof entry.name === 'string', entry.name);
+      check('Leaderboard entry has karma', typeof entry.karma === 'number', `karma: ${entry.karma}`);
+      check('Leaderboard entry has online', typeof entry.online === 'boolean');
+    }
+  } catch (e) {
+    check('Karma REST API', false, e.message);
+  }
+
+  // ── 19. HP & state ──
   console.log(`\n${INFO} Checking player state...`);
   check('Has HP', typeof bot.hp === 'number', `HP: ${bot.hp}`);
   check('Has dead flag', typeof bot.dead === 'boolean', `dead: ${bot.dead}`);

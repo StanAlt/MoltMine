@@ -391,24 +391,18 @@ function gameLoop(now) {
   // Attack cooldown
   if (attackCooldown > 0) attackCooldown -= dt;
 
-  // Mining or mob attack
+  // Left-click: mob attack only (humans observe — only bots can mine/place)
   const mineTarget = controller.getMineTarget();
   if (mineTarget && connection?.connected && !playerDead) {
-    // Check if we're looking at a mob instead of a block
     const hitMob = findMobInCrosshair();
     if (hitMob && attackCooldown <= 0) {
       connection.sendAttackMob(hitMob);
       attackCooldown = 0.4; // attack cooldown
-    } else if (!hitMob) {
-      connection.sendMine(mineTarget);
     }
+    // No mining for human players — bots handle block interactions
   }
 
-  // Placing
-  const placeTarget = controller.getPlaceTarget();
-  if (placeTarget && connection?.connected && !playerDead) {
-    connection.sendPlace(placeTarget, hotbar[selectedSlot]);
-  }
+  // No placing for human players — bots handle building
 
   // Water shader animation
   if (voxelWorld.waterMaterial?.uniforms) {

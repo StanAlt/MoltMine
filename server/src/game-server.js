@@ -141,6 +141,26 @@ export class GameServer {
       }));
     }
 
+    // GET /api/karma — karma leaderboard
+    if (req.method === 'GET' && req.url === '/api/karma') {
+      const leaderboard = [];
+      for (const [name, profile] of this.persistence.profiles) {
+        const karma = profile.stats?.karma || 0;
+        const karmaGiven = profile.stats?.karmaGiven || 0;
+        if (karma > 0 || karmaGiven > 0) {
+          // Check if player is currently online
+          let online = false;
+          for (const [, s] of this.sessions) {
+            if (s.name === name) { online = true; break; }
+          }
+          leaderboard.push({ name, karma, karmaGiven, online });
+        }
+      }
+      leaderboard.sort((a, b) => b.karma - a.karma);
+      res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      return res.end(JSON.stringify({ leaderboard }));
+    }
+
     // POST /api/agent/join — frictionless bot onboarding
     if (req.method === 'POST' && req.url === '/api/agent/join') {
       let body = '';
@@ -377,6 +397,12 @@ export class GameServer {
           desc: 'Full perception: nearby blocks (raw), players, mobs, items, biome, inventory.',
           example: { kind: 'Perceive', args: { radius: 8 } },
         },
+        {
+          kind: 'GiveKarma',
+          args: { toName: 'string (player name)', reason: 'string? (why, max 200 chars)' },
+          desc: 'Give +1 karma to another bot for being friendly, helpful, or collaborative. Rate limited to 1/min per pair.',
+          example: { kind: 'GiveKarma', args: { toName: 'Victorio', reason: 'helped me build a shelter' } },
+        },
       ],
       channels: Object.values(CHANNEL),
       rateLimit: { actionsPerSecond: 20, chatPerSecond: 2 },
@@ -390,6 +416,8 @@ export class GameServer {
         actionResult: 'Every World/Action ALWAYS returns World/ActionResult {actionId, ok, effects?, error?}',
         blockUpdate: 'Mine/Place trigger Block/Update {pos, block, oldBlock, byAccountId, tick} to all subscribed clients',
         playerState: 'Agents receive Player/State {pos, rot, hp, maxHp, dead} every 500ms',
+        karma: 'Bots can give karma to other bots via GiveKarma. Nearby players in Perceive include karma score. Leaderboard at GET /api/karma.',
+        roles: 'Only bots (agent:true) can Mine, Place, and GiveKarma. Humans observe and chat.',
       },
     };
 
@@ -501,6 +529,7 @@ export class GameServer {
       case ACTION.UNEQUIP_ITEM: return this._actionUnequipItem(ws, session, actionId, args);
       case ACTION.TRADE_OFFER:  return this._actionTradeOffer(ws, session, actionId, args);
       case ACTION.PERCEIVE:     return this._actionPerceive(ws, session, actionId, args);
+      case ACTION.GIVE_KARMA:   return this._actionGiveKarma(ws, session, actionId, args);
       default:
         this._send(ws, S2C.WORLD_ACTION_RESULT, {
           actionId, ok: false,
@@ -573,6 +602,12 @@ export class GameServer {
   }
 
   _actionMine(ws, session, actionId, args) {
+    if (!session.isAgent) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.UNAUTHORIZED, message: 'Only bots can mine blocks' },
+      });
+    }
     if (!args?.pos || typeof args.pos.x !== 'number' || typeof args.pos.y !== 'number' || typeof args.pos.z !== 'number') {
       return this._send(ws, S2C.WORLD_ACTION_RESULT, {
         actionId, ok: false,
@@ -611,6 +646,12 @@ export class GameServer {
   }
 
   _actionPlace(ws, session, actionId, args) {
+    if (!session.isAgent) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.UNAUTHORIZED, message: 'Only bots can place blocks' },
+      });
+    }
     if (!args?.pos || typeof args.pos.x !== 'number' || typeof args.pos.y !== 'number' || typeof args.pos.z !== 'number' ||
         typeof args.blockId !== 'number') {
       return this._send(ws, S2C.WORLD_ACTION_RESULT, {
@@ -873,6 +914,7 @@ export class GameServer {
           pos: other.pos,
           distance: Math.round(dist),
           isAgent: other.isAgent,
+          karma: other.profile?.stats?.karma || 0,
         });
       }
     }
@@ -925,6 +967,8 @@ export class GameServer {
         nearbyItems,
         inventory,
         equipment,
+        karma: session.profile?.stats?.karma || 0,
+        karmaGiven: session.profile?.stats?.karmaGiven || 0,
         blockCount: nearbyBlocks.length,
       },
     });
@@ -952,6 +996,91 @@ export class GameServer {
       actionId, ok: true,
       effects: { text: args.text.slice(0, 500), channel: args.channel || CHANNEL.GLOBAL },
     });
+  }
+
+  // ── Karma ─────────────────────────────────────────────────
+  _actionGiveKarma(ws, session, actionId, args) {
+    if (!session.isAgent) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.UNAUTHORIZED, message: 'Only bots can give karma' },
+      });
+    }
+    if (!args?.toName || typeof args.toName !== 'string') {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'GiveKarma requires args.toName (string — name of the recipient)' },
+      });
+    }
+    if (args.toName === session.name) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.INVALID_ARGUMENT, message: 'Cannot give karma to yourself' },
+      });
+    }
+
+    const reason = typeof args.reason === 'string' ? args.reason.slice(0, 200) : '';
+
+    // Find the target (must be online or have a saved profile)
+    let targetSession = null;
+    for (const [, s] of this.sessions) {
+      if (s.name === args.toName) { targetSession = s; break; }
+    }
+
+    // Check target exists (online or saved profile)
+    const targetProfile = targetSession?.profile ?? this.persistence.getProfile(args.toName);
+    if (!targetProfile) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.NOT_FOUND, message: `Player "${args.toName}" not found` },
+      });
+    }
+
+    // Rate limit: max 1 karma per giver→receiver per 60 seconds
+    const karmaKey = `${session.name}->${args.toName}`;
+    const now = Date.now();
+    if (!this._karmaLastGiven) this._karmaLastGiven = new Map();
+    const lastGiven = this._karmaLastGiven.get(karmaKey) || 0;
+    if (now - lastGiven < 60_000) {
+      return this._send(ws, S2C.WORLD_ACTION_RESULT, {
+        actionId, ok: false,
+        error: { code: ERROR.RATE_LIMITED, message: 'Can only give karma to the same player once per minute' },
+      });
+    }
+    this._karmaLastGiven.set(karmaKey, now);
+
+    // Award karma
+    if (!targetProfile.stats) targetProfile.stats = {};
+    targetProfile.stats.karma = (targetProfile.stats.karma || 0) + 1;
+
+    // Track who gave karma (for giver stats)
+    if (!session.profile.stats) session.profile.stats = {};
+    session.profile.stats.karmaGiven = (session.profile.stats.karmaGiven || 0) + 1;
+
+    // Update the target profile in persistence
+    if (targetSession) {
+      targetSession.profile = targetProfile;
+    }
+    this.persistence.setProfile(args.toName, targetProfile);
+
+    // Broadcast karma event to all players
+    this._broadcastAll(S2C.KARMA_UPDATE, {
+      from: session.name,
+      to: args.toName,
+      reason,
+      newKarma: targetProfile.stats.karma,
+      tick: this._tick,
+    });
+
+    this._send(ws, S2C.WORLD_ACTION_RESULT, {
+      actionId, ok: true,
+      effects: {
+        to: args.toName,
+        reason,
+        newKarma: targetProfile.stats.karma,
+      },
+    });
+    this._audit('giveKarma', session.accountId, { to: args.toName, reason });
   }
 
   // ── Chat ──────────────────────────────────────────────────
@@ -1083,6 +1212,8 @@ export class GameServer {
         blocksMined: 0,
         blocksPlaced: 0,
         chatMessages: 0,
+        karma: 0,
+        karmaGiven: 0,
       },
     };
 
@@ -1139,6 +1270,7 @@ export class GameServer {
         nearbyPlayers.push({
           name: other.name, pos: other.pos,
           distance: Math.round(dist), isAgent: other.isAgent,
+          karma: other.profile?.stats?.karma || 0,
         });
       }
     }

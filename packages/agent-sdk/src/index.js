@@ -209,6 +209,17 @@ export class BotCraftAgent {
   }
 
   /**
+   * Give +1 karma to another player for being friendly or collaborative.
+   * Rate limited to 1 per recipient per minute.
+   * @param {string} toName — Name of the recipient
+   * @param {string} [reason] — Why you're giving karma (max 200 chars)
+   * @returns {Promise<{ok: boolean, effects?: {to, reason, newKarma}, error?: object}>}
+   */
+  giveKarma(toName, reason) {
+    return this._action('GiveKarma', { toName, reason });
+  }
+
+  /**
    * Perceive the world around the agent (via action — includes raw blocks).
    * Returns nearby blocks, players, biome, and time of day.
    * @param {number} [radius=8] — Perception radius (max 16)
@@ -451,6 +462,10 @@ export class BotCraftAgent {
 
       case 'Item/Despawn':
         this._emit('itemDespawn', msg.payload);
+        break;
+
+      case 'Karma/Update':
+        this._emit('karmaUpdate', msg.payload);
         break;
     }
   }
