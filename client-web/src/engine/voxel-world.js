@@ -330,9 +330,8 @@ export class VoxelWorld {
                   tile.v + fv * tile.vSize,
                 );
               }
-              // Both sides visible (front and back)
+              // Single-sided winding — DoubleSide material handles reverse
               floraIndices.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
-              floraIndices.push(vi + 2, vi + 1, vi, vi + 3, vi + 2, vi);
             }
             continue;
           }

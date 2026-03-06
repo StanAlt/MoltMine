@@ -130,10 +130,16 @@ export class PlayerController {
       const speed = (this.keys['ControlLeft'] || this.keys['ControlRight']) ? FLY_SPEED * 2.5 : FLY_SPEED;
       this.velocity.set(moveDir.x * speed, moveDir.y * speed, moveDir.z * speed);
 
-      // Fly mode uses collision — blocks stop the player
-      this._moveAxis('y', this.velocity.y * dt);
-      this._moveAxis('x', this.velocity.x * dt);
-      this._moveAxis('z', this.velocity.z * dt);
+      // Sub-step fly movement so we can't skip past blocks at high speed
+      const totalDist = this.velocity.length() * dt;
+      const maxStep = PLAYER_RADIUS; // never move more than radius per sub-step
+      const steps = Math.max(1, Math.ceil(totalDist / maxStep));
+      const subDt = dt / steps;
+      for (let i = 0; i < steps; i++) {
+        this._moveAxis('y', this.velocity.y * subDt);
+        this._moveAxis('x', this.velocity.x * subDt);
+        this._moveAxis('z', this.velocity.z * subDt);
+      }
     } else {
       // ── Check water state ──
       const feetY = Math.floor(this.position.y - PLAYER_HEIGHT);
